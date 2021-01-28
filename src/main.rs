@@ -9,6 +9,7 @@ use jmclib::log::prelude::*;
 use serde::Deserialize;
 use std::path::{PathBuf, Path};
 use uuid::Uuid;
+use std::io::{Read, Write};
 
 mod lofi;
 mod ensure;
@@ -873,6 +874,66 @@ fn seed_smf(log: &Logger, svccfg: &str, tmpdir: &Path, mountpoint: &Path,
     Ok(())
 }
 
+#[derive(Clone, PartialEq)]
+struct ShadowFile {
+    entries: Vec<Vec<String>>,
+}
+
+impl ShadowFile {
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let mut f = std::fs::File::open(path.as_ref())?;
+        let mut data = String::new();
+        f.read_to_string(&mut data)?;
+
+        let entries = data.lines().enumerate().map(|(i, l)| {
+            let fields = l.split(':').map(str::to_string).collect::<Vec<_>>();
+            if fields.len() != 9 {
+                bail!("invalid shadow line {}: {:?}", i, fields);
+            }
+            Ok(fields)
+        }).collect::<Result<Vec<_>>>()?;
+
+        Ok(ShadowFile {
+            entries,
+        })
+    }
+
+    pub fn password_set(&mut self, user: &str, password: &str) -> Result<()> {
+        /*
+         * First, make sure the username appears exactly once in the shadow
+         * file.
+         */
+        let mc = self.entries.iter().filter(|e| e[0] == user).count();
+        if mc != 1 {
+            bail!("found {} matches for user {} in shadow file", mc, user);
+        }
+
+        self.entries.iter_mut().for_each(|e| {
+            if e[0] == user {
+                e[1] = password.to_string();
+            }
+        });
+        Ok(())
+    }
+
+    pub fn write<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path.as_ref())?;
+
+        let mut data = self.entries.iter().map(|e| e.join(":"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        data.push('\n');
+
+        f.write_all(data.as_bytes())?;
+        f.flush()?;
+        Ok(())
+    }
+}
+
 enum BuildType {
     Pool(String),
     Dataset,
@@ -1336,6 +1397,37 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 ensure::filestr(log, &outstr, &outfile, ROOT, ROOT, 0o644,
                     Create::Always)?;
+            }
+            "shadow" => {
+                #[derive(Deserialize)]
+                struct ShadowArgs {
+                    username: String,
+                    password: Option<String>,
+                }
+
+                let a: ShadowArgs = step.args()?;
+
+                /*
+                 * Read the shadow file:
+                 */
+                let mut path = ib.root()?;
+                path.push("etc");
+                path.push("shadow");
+
+                let orig = ShadowFile::load(&path)?;
+                let mut copy = orig.clone();
+
+                if let Some(password) = a.password.as_deref() {
+                    copy.password_set(&a.username, password)?;
+                }
+
+                if orig == copy {
+                    info!(log, "no change to shadow file; skipping write");
+                } else {
+                    info!(log, "updating shadow file");
+                    copy.write(&path)?;
+                    ensure::perms(&ib.log, &path, ROOT, ROOT, 0o400)?;
+                }
             }
             "ensure_symlink" => {
                 let mp = ib.root()?;
