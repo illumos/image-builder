@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 mod lofi;
 mod ensure;
 
-use ensure::Create;
+use ensure::{Create, HashType};
 
 /*
  * Hard-coded user ID and group ID for root:
@@ -1458,6 +1458,48 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     copy.write(&path)?;
                     ensure::perms(&ib.log, &path, ROOT, ROOT, 0o400)?;
                 }
+            }
+            "digest" => {
+                let mp = ib.root()?;
+                let targmp = mp.to_str().unwrap();
+
+                #[derive(Deserialize)]
+                struct DigestArgs {
+                    algorithm: String,
+                    target: String,
+                    src: String,
+                    owner: String,
+                    group: String,
+                    mode: String,
+                }
+
+                let a: DigestArgs = step.args()?;
+                let owner = translate_uid(&a.owner)?;
+                let group = translate_gid(&a.group)?;
+
+                let ht = match a.algorithm.as_str() {
+                    "sha1" => HashType::SHA1,
+                    "md5" => HashType::MD5,
+                    x => bail!("unknown digest algorithm {}", x),
+                };
+
+                if !a.target.starts_with('/') {
+                    bail!("target must be fully qualified path");
+                }
+                let target = format!("{}{}", targmp, a.target);
+
+                let mode = u32::from_str_radix(&a.mode, 8)?;
+
+                if a.src.starts_with('/') {
+                    bail!("source file must be a relative path");
+                }
+                let src = ib.output_file(&a.src)?;
+
+                let mut hash = ensure::hash_file(&src, &ht)?;
+                hash += "\n";
+
+                ensure::filestr(log, &hash, &target, owner, group, mode,
+                    Create::Always)?;
             }
             "ensure_symlink" => {
                 let mp = ib.root()?;

@@ -10,6 +10,15 @@ use std::io::{Read, BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use jmclib::log::prelude::*;
 use anyhow::{Result, bail, anyhow};
+use digest::Digest;
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq)]
+pub enum HashType {
+    SHA1,
+    MD5,
+    None,
+}
 
 #[derive(Debug, PartialEq)]
 pub enum FileType {
@@ -494,6 +503,41 @@ pub fn symlink<P1: AsRef<Path>, P2: AsRef<Path>>(log: &Logger, dst: P1,
 
     info!(log, "ok!");
     Ok(did_work)
+}
+
+pub fn hash_file<P: AsRef<Path>>(p: P, hashtype: &HashType) -> Result<String> {
+    let p = p.as_ref();
+
+    if let HashType::None = hashtype {
+        return Ok("".to_string());
+    }
+
+    let f = File::open(p)?;
+    let mut r = BufReader::new(f);
+    let mut buf = [0u8; 128 * 1024];
+
+    let mut digest: Box<dyn digest::DynDigest> = match hashtype {
+        HashType::MD5 => Box::new(md5::Md5::new()),
+        HashType::SHA1 => Box::new(sha1::Sha1::new()),
+        HashType::None => panic!("None unexpected"),
+    };
+
+    loop {
+        let sz = r.read(&mut buf)?;
+        if sz == 0 {
+            break;
+        }
+
+        digest.update(&buf[0..sz]);
+    }
+
+    let mut out = String::new();
+    let hash = digest.finalize();
+    for byt in hash.iter() {
+        out.push_str(&format!("{:02x}", byt));
+    }
+
+    Ok(out)
 }
 
 fn spawn_reader<T>(log: &Logger, name: &str, stream: Option<T>)
