@@ -63,7 +63,7 @@ fn main() -> Result<()> {
     fn usage(opts: &getopts::Options) {
         let s = opts.usage("image-builder");
         println!("{}", s);
-    };
+    }
 
     let f = match cmd.as_str() {
         "build" => {
@@ -315,6 +315,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         dataset_remove(log, &tmpds)?;
     }
     dataset_create(log, &tmpds, true)?;
+    zfs_set(log, &tmpds, "sync", "disabled")?;
     let tmpdir = zfs_get(&tmpds, "mountpoint")?;
     info!(log, "temporary directory: {}", tmpdir);
 
@@ -343,6 +344,18 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
             dataset_create(log, &workds, true)?;
         }
 
+        /*
+         * We can disable sync on the work dataset to make writes to the lofi
+         * device go a lot faster.  If the system crashes, we're going to start
+         * this build again anyway.  Output files are stored in a different
+         * dataset where sync is not disabled.  It would be tempting to put the
+         * image in the temporary dataset rather than the work dataset, but we
+         * destroy that unconditionally for each run and if we left a lingering
+         * lofi device open that was attached in the temporary dataset that
+         * would fail.
+         */
+        zfs_set(log, &workds, "sync", "disabled")?;
+
         let mut ib = ImageBuilder {
             build_type: BuildType::Pool(pool.name().to_string()),
             bename,
@@ -358,6 +371,16 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         };
 
         run_build_pool(&mut ib)?;
+
+        /*
+         * Work datasets for builds that result in image files can be safely
+         * removed after a successful build as they are not re-used in
+         * subsequent builds.  A failure to remove the dataset at this stage
+         * would imply we did not clean up all of the lofi devices, etc.
+         */
+        dataset_remove(log, &ib.workds)?;
+        dataset_remove(log, &ib.tmpds)?;
+
         return Ok(());
     }
 
@@ -444,6 +467,13 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         info!(log, "creating output snapshot {}@{}", workds, snap);
         snapshot_create(log, &workds, snap)?;
     }
+
+    /*
+     * Remove the temporary dataset we created for this build.  Note that we do
+     * not remove the work dataset, as multiple file-tree builds will act on
+     * that dataset in sequence.
+     */
+    dataset_remove(log, &ib.tmpds)?;
 
     info!(log, "completed processing {}/{}", group, name);
 
