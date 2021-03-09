@@ -2,7 +2,7 @@
  * Copyright 2021 Oxide Computer Company
  */
 
-use std::process::{Command, exit};
+use std::process::{Command, Stdio, exit};
 use anyhow::{Result, Context, bail, anyhow};
 use std::collections::HashMap;
 use jmclib::log::prelude::*;
@@ -476,6 +476,36 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     dataset_remove(log, &ib.tmpds)?;
 
     info!(log, "completed processing {}/{}", group, name);
+
+    Ok(())
+}
+
+fn gzip<P1, P2>(log: &Logger, src: P1, dst: P2) -> Result<()>
+    where P1: AsRef<Path>, P2: AsRef<Path>
+{
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    info!(log, "GZIP {:?} -> {:?}", src, dst);
+
+    let f = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(dst)?;
+
+    let cmd = Command::new("/usr/bin/gzip")
+        .env_clear()
+        .arg("-c")
+        .arg(src)
+        .stdout(Stdio::from(f))
+        .output()?;
+
+    if !cmd.status.success() {
+        let errmsg = String::from_utf8_lossy(&cmd.stderr);
+        bail!("gzip {:?} > {:?} failed: {}", src, dst, errmsg);
+    }
+
+    info!(log, "gzip ok");
 
     Ok(())
 }
@@ -1458,6 +1488,38 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     copy.write(&path)?;
                     ensure::perms(&ib.log, &path, ROOT, ROOT, 0o400)?;
                 }
+            }
+            "gzip" => {
+                let mp = ib.root()?;
+                let targmp = mp.to_str().unwrap();
+
+                #[derive(Deserialize)]
+                struct DigestArgs {
+                    target: String,
+                    src: String,
+                    owner: String,
+                    group: String,
+                    mode: String,
+                }
+
+                let a: DigestArgs = step.args()?;
+                let owner = translate_uid(&a.owner)?;
+                let group = translate_gid(&a.group)?;
+
+                if !a.target.starts_with('/') {
+                    bail!("target must be fully qualified path");
+                }
+                let target = format!("{}{}", targmp, a.target);
+
+                let mode = u32::from_str_radix(&a.mode, 8)?;
+
+                if a.src.starts_with('/') {
+                    bail!("source file must be a relative path");
+                }
+                let src = ib.output_file(&a.src)?;
+
+                gzip(log, &src, &target)?;
+                ensure::perms(log, &target, owner, group, mode)?;
             }
             "digest" => {
                 let mp = ib.root()?;
