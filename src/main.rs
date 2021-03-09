@@ -1319,6 +1319,68 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     zfs_set(log, &ds, "mountpoint", &mp)?;
                 }
             }
+            "remove_files" => {
+                #[derive(Deserialize)]
+                struct RemoveFilesArgs {
+                    file: Option<PathBuf>,
+                    dir: Option<PathBuf>,
+                    pattern: Option<String>,
+                }
+
+                let a: RemoveFilesArgs = step.args()?;
+
+                match (&a.file, &a.dir, &a.pattern) {
+                    (Some(f), None, None) => {
+                        if !f.is_absolute() {
+                            bail!("file should be an absolute path");
+                        }
+
+                        let mut actual = ib.root()?;
+                        actual.extend(f.components().skip(1));
+                        info!(log, "remove file: {:?}", actual);
+                        std::fs::remove_file(actual)?;
+                    }
+                    (None, Some(d), None) => {
+                        if !d.is_absolute() {
+                            bail!("dir should be an absolute path");
+                        }
+
+                        let mut actual = ib.root()?;
+                        actual.extend(d.components().skip(1));
+                        info!(log, "remove tree: {:?}", actual);
+                        std::fs::remove_dir_all(actual)?;
+                    }
+                    (None, None, Some(p)) => {
+                        let g = glob::Pattern::new(p)?;
+                        let mut w = walkdir::WalkDir::new(ib.root()?)
+                            .min_depth(1)
+                            .follow_links(false)
+                            .contents_first(true)
+                            .same_file_system(true)
+                            .into_iter();
+                        while let Some(ent) = w.next().transpose()? {
+                            if !ent.file_type().is_file() {
+                                continue;
+                            }
+
+                            if let Some(s) = ent.file_name().to_str() {
+                                if g.matches(s) {
+                                    info!(log, "remove file: {:?}", ent.path());
+                                    std::fs::remove_file(ent.path())?;
+                                }
+                                continue;
+                            } else {
+                                bail!("path {:?} cannot be matched?",
+                                    ent.path());
+                            }
+                        }
+                    }
+                    _ => {
+                        bail!("must specify exactly one of \"file\", \"dir\", \
+                            or \"pattern\"");
+                    }
+                }
+            }
             "unpack_tar" => {
                 #[derive(Deserialize)]
                 struct UnpackTarArgs {
