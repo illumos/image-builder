@@ -1671,6 +1671,56 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 ensure::symlink(&log, &link, &a.target, owner, group)?;
             }
+            "ensure_perms" => {
+                let mp = ib.root()?;
+                let targmp = mp.to_str().unwrap();
+
+                #[derive(Deserialize)]
+                struct PermsArgs {
+                    path: String,
+                    owner: String,
+                    group: String,
+                    mode: String,
+                }
+
+                let a: PermsArgs = step.args()?;
+                let owner = translate_uid(&a.owner)?;
+                let group = translate_gid(&a.group)?;
+
+                if !a.path.starts_with('/') {
+                    bail!("path must be fully qualified path");
+                }
+                let path = format!("{}{}", targmp, a.path);
+
+                let mode = u32::from_str_radix(&a.mode, 8)?;
+
+                ensure::perms(log, &path, owner, group, mode)?;
+            }
+            "ensure_directory" | "ensure_dir" => {
+                let mp = ib.root()?;
+                let targmp = mp.to_str().unwrap();
+
+                #[derive(Deserialize)]
+                struct DirArgs {
+                    dir: String,
+                    owner: String,
+                    group: String,
+                    mode: String,
+                }
+
+                let a: DirArgs = step.args()?;
+                let owner = translate_uid(&a.owner)?;
+                let group = translate_gid(&a.group)?;
+
+                if !a.dir.starts_with('/') {
+                    bail!("dir must be fully qualified path");
+                }
+                let dir = format!("{}{}", targmp, a.dir);
+
+                let mode = u32::from_str_radix(&a.mode, 8)?;
+
+                ensure::directory(log, &dir, owner, group, mode)?;
+            }
             "ensure_file" => {
                 let mp = ib.root()?;
                 let targmp = mp.to_str().unwrap();
