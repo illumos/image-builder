@@ -13,8 +13,11 @@ use std::io::{Read, Write};
 
 mod lofi;
 mod ensure;
+mod illumos;
 
 use ensure::{Create, HashType};
+
+type Build = fn(ib: &mut ImageBuilder) -> Result<()>;
 
 /*
  * Hard-coded user ID and group ID for root:
@@ -100,6 +103,206 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/**
+ * Create a blank image file of size megabytes and attach it as a lofi(7D)
+ * device.  If a lofi device for that file already exists, detach it first.  If
+ * the image file already exists, remove it and replace it.  If label is true,
+ * create a labelled lofi device (with partitions and slices), otherwise create
+ * an unlabelled (simple) device.
+ */
+fn recreate_lofi<P: AsRef<Path>>(log: &Logger, imagefile: P, size: usize,
+    label: bool)
+    -> Result<lofi::LofiDevice>
+{
+    let imagefile = imagefile.as_ref();
+
+    /*
+     * Check to make sure it is not already in lofi:
+     */
+    let lofis = lofi::lofi_list()?;
+    let matches: Vec<_> = lofis.iter()
+        .filter(|li| li.filename == imagefile)
+        .collect();
+    if !matches.is_empty() {
+        if matches.len() != 1 {
+            bail!("too many lofis");
+        }
+
+        let li = &matches[0];
+
+        info!(log, "lofi exists {:?} -- removing...", li);
+        lofi::lofi_unmap_device(&li.devpath.as_ref().unwrap())?;
+    } else {
+        info!(log, "no lofi found");
+    }
+
+    ensure::removed(log, &imagefile)?;
+
+    /*
+     * Create the file that we will use as the backing store for the pool.  The
+     * size of this file is the resultant disk image size.
+     */
+    mkfile(log, &imagefile, size)?;
+
+    /*
+     * Attach this file as a lofi(7D) device.
+     */
+    let lofi = lofi::lofi_map(&imagefile, label)?;
+    info!(log, "lofi device = {}", lofi.devpath.as_ref().unwrap().display());
+
+    Ok(lofi)
+}
+
+fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
+    let log = &ib.log;
+
+    /*
+     * Steps like "ensure_file" will have their root directory relative to
+     * "/proto" in the temporary dataset.  This directory represents the root of
+     * the target ISO image.
+     */
+    let rmp = ib.root()?;
+    assert!(!rmp.exists());
+    ensure::directory(log, &rmp, ROOT, ROOT, 0o755)?;
+
+    /*
+     * Now that we have created the proto directory, run the steps for this
+     * template.
+     */
+    run_steps(ib)?;
+
+    info!(ib.log, "steps complete; finalising image!");
+
+    let iso = ib.template.iso.as_ref().unwrap();
+    let imagefile = ib.tmp_file("output.iso")?;
+    let mut args = vec!["/usr/bin/mkisofs", "-N", "-l", "-R", "-U", "-d",
+        "-D", "-c", ".catalog", "-allow-multidot", "-no-iso-translate",
+        "-cache-inodes"];
+    if let Some(boot_bios) = iso.boot_bios.as_deref() {
+        args.push("-eltorito-boot");
+        args.push(boot_bios);
+        args.push("-no-emul-boot");
+        args.push("-boot-info-table");
+    }
+    args.push("-o");
+    args.push(&imagefile.to_str().unwrap());
+    args.push(&rmp.to_str().unwrap());
+    ensure::run(&ib.log, &args)?;
+
+    /*
+     * Copy the image file to the output directory.
+     */
+    let outputfile = ib.output_file(&format!("{}-{}.iso", ib.group,
+        ib.name))?;
+
+    info!(ib.log, "copying image {} to output file {}",
+        imagefile.display(), outputfile.display());
+    ensure::removed(&ib.log, &outputfile)?;
+    std::fs::copy(&imagefile, &outputfile)?;
+    ensure::perms(&ib.log, &outputfile, ROOT, ROOT, 0o644)?;
+
+    info!(ib.log, "completed processing {}/{}", ib.group, ib.name);
+
+    Ok(())
+}
+
+fn run_build_ufs(ib: &mut ImageBuilder) -> Result<()> {
+    let log = &ib.log;
+
+    /*
+     * Arrange this structure:
+     *  /ROOT_DATASET/group/name
+     *      /lofi.ufs -- the lofi image underpinning the UFS image
+     *      /a -- UFS root mountpoint
+     *
+     * Steps like "ensure_file" will have their root directory relative to "/a".
+     * This directory represents "/" (the root file system) in the target boot
+     * environment.
+     */
+
+    /*
+     * First, ensure there is no UFS file system mounted at our expected
+     * location:
+     */
+    let rmp = ib.root()?;
+
+    loop {
+        let mounts = illumos::mounts()?
+            .iter()
+            .filter(|m| rmp == PathBuf::from(&m.mount_point))
+            .cloned()
+            .collect::<Vec<_>>();
+        if mounts.is_empty() {
+            break;
+        }
+        info!(log, "found old mounts: {:#?}", mounts);
+        ensure::run(log, &["/sbin/umount", "-f", rmp.to_str().unwrap()])?;
+    }
+    info!(log, "nothing mounted at {:?}", rmp);
+
+    /*
+     * Now, make sure we have a fresh lofi device...
+     */
+    let imagefile = ib.work_file("lofi.ufs")?;
+    info!(log, "image file: {}", imagefile.display());
+
+    let ufs = ib.template.ufs.as_ref().unwrap();
+
+    /*
+     * Create a regular (unlabelled) lofi(7D) device.  We do not need to
+     * manipulate slices to create the ramdisk image:
+     */
+    let lofi = recreate_lofi(log, &imagefile, ufs.size, false)?;
+    let ldev = lofi.devpath.unwrap();
+
+    ensure::run(log, &["/usr/sbin/newfs", "-o", "space", "-m", "0",
+        "-i", &ufs.inode_density.to_string(), "-b", "4096",
+        &ldev.to_str().unwrap()])?;
+
+    ensure::directory(log, &rmp, ROOT, ROOT, 0o755)?;
+
+    ensure::run(log, &["/usr/sbin/mount", "-F", "ufs",
+        "-o", "nologging,noatime",
+        &ldev.to_str().unwrap(), &rmp.to_str().unwrap()])?;
+
+    /*
+     * Now that we have created the file system, run the steps for this
+     * template.
+     */
+    run_steps(ib)?;
+
+    info!(ib.log, "steps complete; finalising image!");
+
+    /*
+     * Report the used and available space in the temporary pool before we
+     * export it.
+     */
+    ensure::run(&ib.log, &["/usr/bin/df", "-o", "i",  &rmp.to_str().unwrap()])?;
+    ensure::run(&ib.log, &["/usr/bin/df", "-h", &rmp.to_str().unwrap()])?;
+
+    /*
+     * Unmount the file system and detach the lofi device.
+     */
+    ensure::run(&ib.log, &["/sbin/umount", &rmp.to_str().unwrap()])?;
+    lofi::lofi_unmap_device(&ldev)?;
+
+    /*
+     * Copy the image file to the output directory.
+     */
+    let outputfile = ib.output_file(&format!("{}-{}.ufs", ib.group,
+        ib.name))?;
+
+    info!(ib.log, "copying image {} to output file {}",
+        imagefile.display(), outputfile.display());
+    ensure::removed(&ib.log, &outputfile)?;
+    std::fs::copy(&imagefile, &outputfile)?;
+    ensure::perms(&ib.log, &outputfile, ROOT, ROOT, 0o644)?;
+
+    info!(ib.log, "completed processing {}/{}", ib.group, ib.name);
+
+    Ok(())
+}
+
 fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
     let log = &ib.log;
 
@@ -133,43 +336,14 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
     let altroot = ib.work_file("altroot")?;
     info!(log, "pool altroot: {}", altroot.display());
 
-    /*
-     * Check to make sure it is not already in lofi:
-     */
-    let lofis = lofi::lofi_list()?;
-    let matches: Vec<_> = lofis.iter()
-        .filter(|li| li.filename == imagefile)
-        .collect();
-    if !matches.is_empty() {
-        if matches.len() != 1 {
-            bail!("too many lofis");
-        }
-
-        let li = &matches[0];
-
-        info!(log, "lofi exists {:?} -- removing...", li);
-        lofi::lofi_unmap_device(&li.devpath.as_ref().unwrap())?;
-    } else {
-        info!(log, "no lofi found");
-    }
-
-    ensure::removed(log, &imagefile)?;
-
     let pool = ib.template.pool.as_ref().unwrap();
-
-    /*
-     * Create the file that we will use as the backing store for the pool.  The
-     * size of this file is the resultant disk image size.
-     */
-    mkfile(log, &imagefile, pool.size())?;
 
     /*
      * Attach this file as a labelled lofi(7D) device so that we can manage
      * slices.
      */
-    let lofi = lofi::lofi_map(&imagefile, true)?;
+    let lofi = recreate_lofi(log, &imagefile, pool.size(), true)?;
     let ldev = lofi.devpath.as_ref().unwrap();
-    info!(log, "lofi device = {}", ldev.display());
 
     let disk = ldev.to_str().unwrap().trim_end_matches("p0");
     info!(log, "pool device = {}", disk);
@@ -329,9 +503,16 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
      */
     let bename = Uuid::new_v4().to_hyphenated().to_string()[0..8].to_string();
 
-    if let Some(pool) = &t.pool {
-        assert!(t.dataset.is_none());
+    let c = t.ufs.is_some() as u32
+        + t.iso.is_some() as u32
+        + t.pool.is_some() as u32
+        + t.dataset.is_some() as u32;
+    if c > 1 {
+        bail!("template must have at most one of \"dataset\", \"ufs\", \
+            \"pool\", or \"iso\"");
+    }
 
+    if t.ufs.is_some() || t.pool.is_some() || t.iso.is_some() {
         let workds = format!("{}/work/{}/{}", ibrootds, group, name);
         info!(log, "work dataset: {}", workds);
 
@@ -356,8 +537,18 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
          */
         zfs_set(log, &workds, "sync", "disabled")?;
 
+        let (build_type, func) = if let Some(pool) = &t.pool {
+            (BuildType::Pool(pool.name().to_string()), run_build_pool as Build)
+        } else if t.ufs.is_some() {
+            (BuildType::Ufs, run_build_ufs as Build)
+        } else if t.iso.is_some() {
+            (BuildType::Iso, run_build_iso as Build)
+        } else {
+            panic!("expected one or the other");
+        };
+
         let mut ib = ImageBuilder {
-            build_type: BuildType::Pool(pool.name().to_string()),
+            build_type,
             bename,
             group,
             name,
@@ -370,7 +561,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
             log: log.clone(),
         };
 
-        run_build_pool(&mut ib)?;
+        (func)(&mut ib)?;
 
         /*
          * Work datasets for builds that result in image files can be safely
@@ -1008,6 +1199,8 @@ impl ShadowFile {
 enum BuildType {
     Pool(String),
     Dataset,
+    Ufs,
+    Iso,
 }
 
 struct ImageBuilder {
@@ -1034,18 +1227,27 @@ impl ImageBuilder {
      * that for a pool build.
      */
     fn root(&self) -> Result<PathBuf> {
-        let mut s = zfs_get(&self.workds, "mountpoint")?;
+        let s = zfs_get(&self.workds, "mountpoint")?;
+        let t = zfs_get(&self.tmpds, "mountpoint")?;
 
-        match &self.build_type {
+        Ok(PathBuf::from(match &self.build_type {
+            BuildType::Dataset => s,
             /*
              * When a template targets a pool, files target the mountpoint of
              * the boot environment we create in the pool.
              */
-            BuildType::Pool(_) => s += "/a",
-            BuildType::Dataset => (),
-        }
-
-        Ok(PathBuf::from(s))
+            BuildType::Pool(_) => s + "/a",
+            /*
+             * When a template targets a UFS, files target the mountpoint of
+             * the UFS file system we create on the lofi device.
+             */
+            BuildType::Ufs => s + "/a",
+            /*
+             * ISO Files are not created using a lofi device, so we can just
+             * use the temporary dataset.
+             */
+            BuildType::Iso => t + "/proto",
+        }))
     }
 
     fn target_pool(&self) -> String {
@@ -1072,6 +1274,12 @@ impl ImageBuilder {
     fn tmpdir(&self) -> Result<PathBuf> {
         let s = zfs_get(&self.tmpds, "mountpoint")?;
         Ok(PathBuf::from(s))
+    }
+
+    fn tmp_file(&self, n: &str) -> Result<PathBuf> {
+        let mut p = PathBuf::from(zfs_get(&self.tmpds, "mountpoint")?);
+        p.push(n);
+        Ok(p)
     }
 
     fn work_file(&self, n: &str) -> Result<PathBuf> {
@@ -1119,6 +1327,17 @@ impl ImageBuilder {
     fn bename(&self) -> &str {
         &self.bename
     }
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct Iso {
+    boot_bios: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct Ufs {
+    size: usize,
+    inode_density: usize,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -1187,6 +1406,8 @@ impl<T> StepExt<T> for Step
 struct Template {
     dataset: Option<Dataset>,
     pool: Option<Pool>,
+    ufs: Option<Ufs>,
+    iso: Option<Iso>,
     steps: Vec<Step>,
 }
 
