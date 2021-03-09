@@ -883,7 +883,7 @@ fn pkg_ensure_variant(log: &Logger, root: &str, variant: &str, value: &str)
 }
 
 fn seed_smf(log: &Logger, svccfg: &str, tmpdir: &Path, mountpoint: &Path,
-    debug: bool) -> Result<()>
+    debug: bool, apply_site: bool) -> Result<()>
 {
     let tmpdir = tmpdir.to_str().unwrap();
     let mountpoint = mountpoint.to_str().unwrap();
@@ -925,6 +925,17 @@ fn seed_smf(log: &Logger, svccfg: &str, tmpdir: &Path, mountpoint: &Path,
             "addpg", "options", "application"], Some(&env))?;
         ensure::run_envs(log, &[svccfg, "-s", "system/svc/restarter:default",
             "setprop", "options/logging=debug"], Some(&env))?;
+    }
+
+    /*
+     * If the image ships a site profile, we may wish to apply it before the
+     * first boot.  Otherwise, services that are disabled in the site profile
+     * may start up before the profile is applied in the booted system, only to
+     * then be disabled again.
+     */
+    if apply_site {
+        let profile_site = format!("{}/var/svc/profile/site.xml", mountpoint);
+        ensure::run_envs(log, &[svccfg, "apply", &profile_site], Some(&env))?;
     }
 
     ensure::file(log, &repo, &installto, ROOT, ROOT, 0o600,
@@ -1757,12 +1768,15 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 #[derive(Deserialize)]
                 struct SeedSmfArgs {
                     debug: Option<bool>,
+                    apply_site: Option<bool>,
                 }
 
                 let a: SeedSmfArgs = step.args()?;
                 let debug = a.debug.unwrap_or(false);
+                let apply_site = a.apply_site.unwrap_or(false);
 
-                seed_smf(log, &ib.svccfg, &ib.tmpdir()?, &ib.root()?, debug)?;
+                seed_smf(log, &ib.svccfg, &ib.tmpdir()?, &ib.root()?, debug,
+                    apply_site)?;
             }
             x => {
                 bail!("INVALID STEP TYPE: {}", x);
