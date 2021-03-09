@@ -1403,6 +1403,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 #[derive(Deserialize)]
                 struct PackTarArgs {
                     name: String,
+                    include: Option<Vec<String>>,
                 }
 
                 let a: PackTarArgs = step.args()?;
@@ -1414,10 +1415,21 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                  */
                 let tarf = ib.output_file(&a.name)?;
                 ensure::removed(log, &tarf)?;
-                ensure::run(log, &["/usr/sbin/tar", "czeEp@/f",
-                    &tarf.to_str().unwrap(),
-                    "-C", &mp.to_str().unwrap(),
-                    "."])?;
+
+                let mut args = vec!["/usr/sbin/tar", "czeEp@/f",
+                    &tarf.to_str().unwrap()];
+                if let Some(include) = &a.include {
+                    include.iter().for_each(|s| {
+                        args.push("-C");
+                        args.push(&mp.to_str().unwrap());
+                        args.push(s.as_str());
+                    });
+                } else {
+                    args.push("-C");
+                    args.push(&mp.to_str().unwrap());
+                    args.push(".");
+                }
+                ensure::run(log, &args)?;
             }
             "onu" => {
                 #[derive(Deserialize)]
