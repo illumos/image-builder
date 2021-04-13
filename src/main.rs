@@ -1033,6 +1033,29 @@ fn pkg_uninstall(log: &Logger, root: &str, packages: &[&str]) -> Result<()> {
     ensure::run(log, &newargs)
 }
 
+fn pkg_optional_deps(_log: &Logger, root: &str, package: &str)
+    -> Result<Vec<String>>
+{
+    let cmd = Command::new("/usr/bin/pkg")
+        .env_clear()
+        .arg("-R").arg(root)
+        .arg("contents")
+        .arg("-t").arg("depend")
+        .arg("-a").arg("type=optional")
+        .arg("-H")
+        .arg("-o").arg("fmri")
+        .arg(package)
+        .output()?;
+
+    if !cmd.status.success() {
+        let errmsg = String::from_utf8_lossy(&cmd.stderr);
+        bail!("pkg contents failed: {}", errmsg);
+    }
+
+    let out = String::from_utf8(cmd.stdout)?;
+    Ok(out.lines().map(|s| s.trim().to_string()).collect())
+}
+
 fn pkg_ensure_variant(log: &Logger, root: &str, variant: &str, value: &str)
     -> Result<()>
 {
@@ -2020,12 +2043,50 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 #[derive(Deserialize)]
                 struct PkgInstallArgs {
                     pkgs: Vec<String>,
+                    #[serde(default)]
+                    include_optional: bool,
                 }
 
                 let a: PkgInstallArgs = step.args()?;
                 let mp = ib.root()?;
+
                 let pkgs: Vec<_> = a.pkgs.iter().map(|s| s.as_str()).collect();
                 pkg_install(log, &mp.to_str().unwrap(), pkgs.as_slice())?;
+
+                if a.include_optional {
+                    let mut pkgs = Vec::new();
+
+                    /*
+                     * For each package, expand any optional dependencies and
+                     * add those to the install list.
+                     *
+                     * XXX It's possible we should look at the
+                     * "opensolaris.zone" variant here; for now we assume we are
+                     * in the global zone and all packages are OK.
+                     */
+                    for pkg in a.pkgs.iter() {
+                        let opts = pkg_optional_deps(log,
+                            &mp.to_str().unwrap(),
+                            pkg.as_str())?;
+
+                        for opt in opts.iter() {
+                            if pkgs.contains(opt) {
+                                continue;
+                            }
+
+                            info!(log, "optional package: {} -> {}", pkg, opt);
+                            pkgs.push(opt.to_string());
+                        }
+                    }
+
+                    if !pkgs.is_empty() {
+                        let pkgs: Vec<_> = pkgs.iter().map(|s| s.as_str())
+                            .collect();
+                        pkg_install(log,
+                            &mp.to_str().unwrap(),
+                            pkgs.as_slice())?;
+                    }
+                }
             }
             "pkg_set_property" => {
                 #[derive(Deserialize)]
