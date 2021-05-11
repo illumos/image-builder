@@ -1096,6 +1096,49 @@ fn pkg_ensure_variant(log: &Logger, root: &str, variant: &str, value: &str)
     Ok(())
 }
 
+fn pkg_ensure_facet(log: &Logger, root: &str, facet: &str, value: &str)
+    -> Result<()>
+{
+    let cmd = Command::new("/usr/bin/pkg")
+        .env_clear()
+        .arg("-R").arg(root)
+        .arg("facet")
+        .arg("-F").arg("json")
+        .output()?;
+
+    if !cmd.status.success() {
+        let errmsg = String::from_utf8_lossy(&cmd.stderr);
+        bail!("pkg facet failed: {}", errmsg);
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct Facet {
+        facet: String,
+        masked: String,
+        src: String,
+        value: String,
+    }
+
+    let tab: Vec<Facet> = serde_json::from_slice(&cmd.stdout)?;
+    for ent in tab.iter() {
+        if ent.facet == format!("facet.{}", facet) {
+            if ent.value == value {
+                info!(log, "facet {} is already {}", facet, value);
+                return Ok(());
+            } else {
+                info!(log, "facet {} is {}; changing to {}", facet,
+                    ent.value, value);
+                break;
+            }
+        }
+    }
+
+    ensure::run(log, &["/usr/bin/pkg", "-R", root, "change-facet",
+        &format!("{}={}", facet, value)])?;
+    Ok(())
+}
+
 fn seed_smf(log: &Logger, svccfg: &str, tmpdir: &Path, mountpoint: &Path,
     debug: bool, apply_site: bool) -> Result<()>
 {
@@ -2165,6 +2208,18 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let mp = ib.root()?;
                 pkg_ensure_variant(log, &mp.to_str().unwrap(),
                     &a.variant, &a.value)?;
+            }
+            "pkg_change_facet" => {
+                #[derive(Deserialize)]
+                struct PkgChangeFacetArgs {
+                    facet: String,
+                    value: String,
+                }
+
+                let a: PkgChangeFacetArgs = step.args()?;
+                let mp = ib.root()?;
+                pkg_ensure_facet(log, &mp.to_str().unwrap(),
+                    &a.facet, &a.value)?;
             }
             "pkg_purge_history" => {
                 let mp = ib.root()?;
