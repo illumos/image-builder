@@ -1722,6 +1722,9 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 #[derive(Deserialize)]
                 struct OnuArgs {
                     repo: String,
+                    publisher: String,
+                    #[serde(default)]
+                    uninstall: Vec<String>,
                 }
 
                 let a: OnuArgs = step.args()?;
@@ -1735,7 +1738,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 pkg(log, &["-R", &targmp, "set-publisher",
                     "--no-refresh",
                     "--non-sticky",
-                    "openindiana.org",
+                    &a.publisher,
                 ])?;
                 pkg(log, &["-R", &targmp, "set-publisher",
                     "-e",
@@ -1745,10 +1748,13 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     publ,
                 ])?;
                 pkg(log, &["-R", &targmp, "refresh", "--full"])?;
-                pkg(log, &["-R", &targmp, "uninstall",
-                    "userland-incorporation",
-                    "entire",
-                ])?;
+                if !a.uninstall.is_empty() {
+                    let mut args = vec!["-R", &targmp, "uninstall"];
+                    for pkg in a.uninstall.iter() {
+                        args.push(pkg.as_str());
+                    }
+                    pkg(log, &args)?;
+                }
                 pkg(log, &["-R", &targmp, "update"])?;
                 pkg(log, &["-R", &targmp, "purge-history"])?;
             }
