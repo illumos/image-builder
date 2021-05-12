@@ -1755,6 +1755,9 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     }
                     pkg(log, &args)?;
                 }
+                pkg(log, &["-R", &targmp, "change-facet",
+                    "onu.ooceonly=false"
+                ])?;
                 pkg(log, &["-R", &targmp, "update"])?;
                 pkg(log, &["-R", &targmp, "purge-history"])?;
             }
