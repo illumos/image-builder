@@ -404,6 +404,28 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
      * Export the pool and detach the lofi device.
      */
     pool_export(&ib.log, &temppool)?;
+
+    if ib.template.pool.as_ref().unwrap().partition_only.unwrap_or(false) {
+        let outpartfile = ib.output_file(&format!("{}-{}.partonly", ib.group,
+            ib.name))?;
+        ensure::removed(&ib.log, &outpartfile)?;
+        info!(ib.log, "extract just the ZFS partition to {:?}", outpartfile);
+
+        let uefi = ib.template.pool.as_ref().unwrap().uefi.unwrap_or(false);
+        let slice = if uefi {
+            "1"
+        } else {
+            "0"
+        };
+
+        ensure::run(&ib.log, &[
+            "dd",
+            &format!("if={}s{}", disk.replace("dsk", "rdsk"), slice),
+            &format!("of={}", outpartfile.to_str().unwrap()),
+            "bs=256k",
+        ])?;
+    }
+
     lofi::lofi_unmap_device(&ldev)?;
 
     /*
@@ -1412,6 +1434,7 @@ struct Pool {
     ashift: Option<u8>,
     uefi: Option<bool>,
     size: usize,
+    partition_only: Option<bool>,
 }
 
 impl Pool {
