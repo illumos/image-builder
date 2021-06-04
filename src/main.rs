@@ -104,6 +104,42 @@ fn main() -> Result<()> {
 }
 
 /**
+ * If a lofi device for this file exists, detach it.  Returns true if a lofi
+ * device was found, otherwise returns false.
+ */
+fn teardown_lofi<P: AsRef<Path>>(log: &Logger, imagefile: P) -> Result<bool> {
+    let imagefile = imagefile.as_ref();
+
+    let lofis = lofi::lofi_list()?;
+    let matches: Vec<_> = lofis.iter()
+        .filter(|li| li.filename == imagefile)
+        .collect();
+    if !matches.is_empty() {
+        if matches.len() != 1 {
+            bail!("too many lofis");
+        }
+
+        let li = &matches[0];
+
+        info!(log, "lofi exists {:?} -- removing...", li);
+        lofi::lofi_unmap_device(&li.devpath.as_ref().unwrap())?;
+        Ok(true)
+    } else {
+        info!(log, "no lofi found");
+        Ok(false)
+    }
+}
+
+fn attach_lofi<P: AsRef<Path>>(log: &Logger, imagefile: P, label: bool)
+    -> Result<lofi::LofiDevice>
+{
+    let lofi = lofi::lofi_map(&imagefile, label)?;
+    info!(log, "lofi device = {}", lofi.devpath.as_ref().unwrap().display());
+
+    Ok(lofi)
+}
+
+/**
  * Create a blank image file of size megabytes and attach it as a lofi(7D)
  * device.  If a lofi device for that file already exists, detach it first.  If
  * the image file already exists, remove it and replace it.  If label is true,
@@ -119,24 +155,9 @@ fn recreate_lofi<P: AsRef<Path>>(log: &Logger, imagefile: P, size: usize,
     /*
      * Check to make sure it is not already in lofi:
      */
-    let lofis = lofi::lofi_list()?;
-    let matches: Vec<_> = lofis.iter()
-        .filter(|li| li.filename == imagefile)
-        .collect();
-    if !matches.is_empty() {
-        if matches.len() != 1 {
-            bail!("too many lofis");
-        }
+    teardown_lofi(log, imagefile)?;
 
-        let li = &matches[0];
-
-        info!(log, "lofi exists {:?} -- removing...", li);
-        lofi::lofi_unmap_device(&li.devpath.as_ref().unwrap())?;
-    } else {
-        info!(log, "no lofi found");
-    }
-
-    ensure::removed(log, &imagefile)?;
+    ensure::removed(log, imagefile)?;
 
     /*
      * Create the file that we will use as the backing store for the pool.  The
@@ -147,10 +168,110 @@ fn recreate_lofi<P: AsRef<Path>>(log: &Logger, imagefile: P, size: usize,
     /*
      * Attach this file as a lofi(7D) device.
      */
-    let lofi = lofi::lofi_map(&imagefile, label)?;
-    info!(log, "lofi device = {}", lofi.devpath.as_ref().unwrap().display());
+    attach_lofi(log, imagefile, label)
+}
 
-    Ok(lofi)
+/**
+ * Offset and length (within an ISO image) of an El Torito boot image.  Sizes
+ * are in bytes.
+ */
+#[derive(Debug)]
+struct ElToritoEntry {
+    offset: usize,
+    length: usize,
+}
+
+/**
+ * Add an MBR partition to the specified raw device.  Valid values for
+ * "id" are described in "/usr/include/sys/dktp/fdisk.h"; of particular
+ * note:
+ *      X86BOOT     190     x86 illumos boot partition
+ *      EFI_FS      239     EFI File System (System Partition)
+ *
+ * Both "start" and "nsectors" are specified as a count of 512 byte disk blocks.
+ */
+fn fdisk_add<P: AsRef<Path>>(log: &Logger, rdev: P, id: u8, start: u32,
+    nsectors: u32) -> Result<()>
+{
+    let rdev = rdev.as_ref();
+
+    ensure::run(log, &["/usr/sbin/fdisk",
+        "-A", &format!("{}:0:0:0:0:0:0:0:{}:{}", id, start, nsectors),
+        rdev.to_str().unwrap(),
+    ])?;
+
+    Ok(())
+}
+
+fn installboot<P1, P2, P3>(log: &Logger, rdev: P1, stage1: P2, stage2: P3)
+    -> Result<()>
+    where P1: AsRef<Path>, P2: AsRef<Path>, P3: AsRef<Path>,
+{
+    let rdev = rdev.as_ref();
+    let stage1 = stage1.as_ref();
+    let stage2 = stage2.as_ref();
+
+    ensure::run(log, &["/usr/sbin/installboot",
+        "-fm",
+        stage1.to_str().unwrap(),
+        stage2.to_str().unwrap(),
+        rdev.to_str().unwrap(),
+    ])?;
+
+    Ok(())
+}
+
+fn etdump<P: AsRef<Path>>(log: &Logger, imagefile: P, platform: &str,
+    system: &str) -> Result<ElToritoEntry>
+{
+    let imagefile = imagefile.as_ref();
+
+    info!(log, "examining El Torito entries in {:?}", imagefile);
+
+    let etdump = Command::new("/usr/bin/etdump")
+        .env_clear()
+        .arg("--format")
+        .arg("shell")
+        .arg(imagefile)
+        .output()?;
+
+    if !etdump.status.success() {
+        let errmsg = String::from_utf8_lossy(&etdump.stderr);
+        bail!("etdump failed: {}", errmsg);
+    }
+
+    for l in String::from_utf8(etdump.stdout)?.lines() {
+        let mut m: HashMap<String, String> = HashMap::new();
+        for t in l.split(';') {
+            let kv = t.split('=').collect::<Vec<_>>();
+            if kv.len() != 2 {
+                bail!("unexpected term in etdump line: {:?}", l);
+            }
+            if let Some(k) = kv[0].strip_prefix("et_") {
+                m.insert(k.to_string(), kv[1].to_string());
+            }
+        }
+
+        if m.get("platform") == Some(&platform.to_string()) &&
+            m.get("system") == Some(&system.to_string())
+        {
+            let offset = if let Some(lba) = m.get("lba") {
+                lba.parse::<usize>()? * 2048
+            } else {
+                bail!("missing LBA?");
+            };
+            let length = if let Some(sectors) = m.get("sectors") {
+                sectors.parse::<usize>()? * 512
+            } else {
+                bail!("missing sectors?");
+            };
+
+            return Ok(ElToritoEntry { offset, length, });
+        }
+    }
+
+    bail!("could not find El Torito entry for (platform {} system {})",
+        platform, system);
 }
 
 fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
@@ -174,20 +295,114 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
     info!(ib.log, "steps complete; finalising image!");
 
     let iso = ib.template.iso.as_ref().unwrap();
-    let imagefile = ib.tmp_file("output.iso")?;
+
+    if iso.hybrid.is_some() && !iso.boot_uefi.is_some() {
+        /*
+         * XXX Due to limitations in installboot(1M), it is not presently
+         * possible to specify a device path for boot loader installation unless
+         * there is a numbered partition (not the whole disk) on which an
+         * identifiable file system is present.  Without the ESP image embedded
+         * in the ISO, we have no such file system to specify.
+         */
+        bail!("presently all hybrid images must include UEFI support");
+    }
+
+    let imagefile = ib.work_file("output.iso")?;
+    teardown_lofi(&ib.log, &imagefile)?;
+    ensure::removed(&ib.log, &imagefile)?;
+
     let mut args = vec!["/usr/bin/mkisofs", "-N", "-l", "-R", "-U", "-d",
         "-D", "-c", ".catalog", "-allow-multidot", "-no-iso-translate",
         "-cache-inodes"];
+    if let Some(volume_id) = iso.volume_id.as_deref() {
+        args.push("-V");
+        args.push(volume_id);
+    }
+    let mut need_alt = false;
     if let Some(boot_bios) = iso.boot_bios.as_deref() {
         args.push("-eltorito-boot");
         args.push(boot_bios);
         args.push("-no-emul-boot");
         args.push("-boot-info-table");
+        need_alt = true;
+    }
+    if let Some(boot_uefi) = iso.boot_uefi.as_deref() {
+        if need_alt {
+            args.push("-eltorito-alt-boot");
+        }
+        args.push("-eltorito-platform");
+        args.push("efi");
+        args.push("-eltorito-boot");
+        args.push(boot_uefi);
+        args.push("-no-emul-boot");
     }
     args.push("-o");
     args.push(&imagefile.to_str().unwrap());
     args.push(&rmp.to_str().unwrap());
     ensure::run(&ib.log, &args)?;
+
+    /*
+     * If this is to be a hybrid ISO (i.e., can also be used as a USB boot disk)
+     * we need to create a partition table that maps to the appropriate regions
+     * of the ISO image.
+     */
+    if let Some(hybrid) = iso.hybrid.as_ref() {
+        if !iso.boot_uefi.is_some() {
+            bail!("hybrid images must support UEFI at present");
+        }
+
+        /*
+         * Attach the ISO image file as a labelled lofi device, so that we can
+         * use fdisk(1M) and installboot(1M):
+         */
+        let lofi = attach_lofi(&ib.log, &imagefile, true)?;
+        let rdev = lofi.rdevpath.as_ref().unwrap();
+
+        /*
+         * Create a small x86 boot partition (type 190) near the start of the
+         * ISO, from sector 3 up to sector 63.  The installboot(1M) utility will
+         * place the stage2 loader file (which can boot from the ISO portion of
+         * the image) there.
+         *
+         * The ISO data itself begins at sector 64.
+         */
+        fdisk_add(&ib.log, rdev, 190, 3, 60)?;
+
+        if iso.boot_uefi.is_some() {
+            /*
+             * Locate the EFI system partition image within the ISO file:
+             */
+            let esp = etdump(&ib.log, &imagefile, "efi", "i386")?;
+            info!(ib.log, "esp @ {:?}", esp);
+
+            /*
+             * Create a partition table entry so that EFI firmware knows to
+             * look for the ESP:
+             */
+            let start = (esp.offset as u32) / 512;
+            let nsectors = (esp.length as u32) / 512;
+            fdisk_add(&ib.log, rdev, 239, start, nsectors)?;
+        }
+
+        /*
+         * The p0 device represents the whole disk.  Unfortunately, installboot
+         * does not presently accept such a path; it requires the path to a file
+         * system for which it can identify the type.  We choose the ESP, which
+         * is the second partition in our MBR table.
+         */
+        let p0 = rdev.to_str().unwrap();
+        let p2 = if let Some(rdsk) = p0.strip_suffix("p0") {
+            format!("{}p2", rdsk)
+        } else {
+            bail!("unexpected lofi device path: {}", p0);
+        };
+
+        let stage1 = format!("{}/{}", rmp.to_str().unwrap(), hybrid.stage1);
+        let stage2 = format!("{}/{}", rmp.to_str().unwrap(), hybrid.stage2);
+        installboot(&ib.log, &p2, &stage1, &stage2)?;
+
+        teardown_lofi(&ib.log, &imagefile)?;
+    }
 
     /*
      * Copy the image file to the output directory.
@@ -1461,6 +1676,15 @@ impl ImageBuilder {
 #[derive(Deserialize, Debug, Clone)]
 struct Iso {
     boot_bios: Option<String>,
+    boot_uefi: Option<String>,
+    volume_id: Option<String>,
+    hybrid: Option<Hybrid>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct Hybrid {
+    stage1: String,
+    stage2: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
