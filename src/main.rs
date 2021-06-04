@@ -206,14 +206,22 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
     Ok(())
 }
 
-fn run_build_ufs(ib: &mut ImageBuilder) -> Result<()> {
+fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
     let log = &ib.log;
+
+    let fstyp = if let Some(ufs) = ib.template.ufs.as_ref() {
+        Fstyp::Ufs(ufs.clone())
+    } else if let Some(pcfs) = ib.template.pcfs.as_ref() {
+        Fstyp::Pcfs(pcfs.clone())
+    } else {
+        bail!("expected a \"ufs\" or \"pcfs\" property");
+    };
 
     /*
      * Arrange this structure:
      *  /ROOT_DATASET/group/name
-     *      /lofi.ufs -- the lofi image underpinning the UFS image
-     *      /a -- UFS root mountpoint
+     *      /lofi.$fsname -- the lofi image underpinning the UFS/FAT image
+     *      /a -- UFS/FAT root mountpoint
      *
      * Steps like "ensure_file" will have their root directory relative to "/a".
      * This directory represents "/" (the root file system) in the target boot
@@ -221,8 +229,7 @@ fn run_build_ufs(ib: &mut ImageBuilder) -> Result<()> {
      */
 
     /*
-     * First, ensure there is no UFS file system mounted at our expected
-     * location:
+     * First, ensure there is no file system mounted at our expected location:
      */
     let rmp = ib.root()?;
 
@@ -240,29 +247,48 @@ fn run_build_ufs(ib: &mut ImageBuilder) -> Result<()> {
     }
     info!(log, "nothing mounted at {:?}", rmp);
 
+    let (fsname, size) = match &fstyp {
+        Fstyp::Ufs(ufs) => ("ufs", ufs.size),
+        Fstyp::Pcfs(pcfs) => ("pcfs", pcfs.size),
+    };
+
     /*
      * Now, make sure we have a fresh lofi device...
      */
-    let imagefile = ib.work_file("lofi.ufs")?;
+    let imagefile = ib.work_file(&format!("lofi.{}", fsname))?;
     info!(log, "image file: {}", imagefile.display());
-
-    let ufs = ib.template.ufs.as_ref().unwrap();
 
     /*
      * Create a regular (unlabelled) lofi(7D) device.  We do not need to
      * manipulate slices to create the ramdisk image:
      */
-    let lofi = recreate_lofi(log, &imagefile, ufs.size, false)?;
+    let lofi = recreate_lofi(log, &imagefile, size, false)?;
     let ldev = lofi.devpath.unwrap();
+    let lrdev = lofi.rdevpath.unwrap();
 
-    ensure::run(log, &["/usr/sbin/newfs", "-o", "space", "-m", "0",
-        "-i", &ufs.inode_density.to_string(), "-b", "4096",
-        &ldev.to_str().unwrap()])?;
+    let mntopts = match &fstyp {
+        Fstyp::Ufs(ufs) => {
+            ensure::run(log, &["/usr/sbin/newfs", "-o", "space", "-m", "0",
+                "-i", &ufs.inode_density.to_string(), "-b", "4096",
+                &ldev.to_str().unwrap()])?;
+            "nologging,noatime"
+        }
+        Fstyp::Pcfs(pcfs) => {
+            /*
+             * Because we are using the "nofdisk" option, we need to specify the
+             * target file system size in term of 512 byte sectors:
+             */
+            let secsize = size * 1024 * 1024 / 512;
+            ensure::run(log, &["/usr/sbin/mkfs", "-F", "pcfs", "-o",
+                &format!("b={},nofdisk,size={}", pcfs.label, secsize),
+                &lrdev.to_str().unwrap()])?;
+            "noatime"
+        }
+    };
 
     ensure::directory(log, &rmp, ROOT, ROOT, 0o755)?;
 
-    ensure::run(log, &["/usr/sbin/mount", "-F", "ufs",
-        "-o", "nologging,noatime",
+    ensure::run(log, &["/usr/sbin/mount", "-F", fsname, "-o", mntopts,
         &ldev.to_str().unwrap(), &rmp.to_str().unwrap()])?;
 
     /*
@@ -277,7 +303,13 @@ fn run_build_ufs(ib: &mut ImageBuilder) -> Result<()> {
      * Report the used and available space in the temporary pool before we
      * export it.
      */
-    ensure::run(&ib.log, &["/usr/bin/df", "-o", "i",  &rmp.to_str().unwrap()])?;
+    if let Fstyp::Ufs(_) = &fstyp {
+        /*
+         * Only UFS has inodes.
+         */
+        ensure::run(&ib.log, &["/usr/bin/df", "-o", "i",
+            &rmp.to_str().unwrap()])?;
+    }
     ensure::run(&ib.log, &["/usr/bin/df", "-h", &rmp.to_str().unwrap()])?;
 
     /*
@@ -289,8 +321,8 @@ fn run_build_ufs(ib: &mut ImageBuilder) -> Result<()> {
     /*
      * Copy the image file to the output directory.
      */
-    let outputfile = ib.output_file(&format!("{}-{}.ufs", ib.group,
-        ib.name))?;
+    let outputfile = ib.output_file(&format!("{}-{}.{}", ib.group,
+        ib.name, fsname))?;
 
     info!(ib.log, "copying image {} to output file {}",
         imagefile.display(), outputfile.display());
@@ -526,6 +558,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     let bename = Uuid::new_v4().to_hyphenated().to_string()[0..8].to_string();
 
     let c = t.ufs.is_some() as u32
+        + t.pcfs.is_some() as u32
         + t.iso.is_some() as u32
         + t.pool.is_some() as u32
         + t.dataset.is_some() as u32;
@@ -534,7 +567,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
             \"pool\", or \"iso\"");
     }
 
-    if t.ufs.is_some() || t.pool.is_some() || t.iso.is_some() {
+    if !t.dataset.is_some() {
         let workds = format!("{}/work/{}/{}", ibrootds, group, name);
         info!(log, "work dataset: {}", workds);
 
@@ -562,7 +595,9 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         let (build_type, func) = if let Some(pool) = &t.pool {
             (BuildType::Pool(pool.name().to_string()), run_build_pool as Build)
         } else if t.ufs.is_some() {
-            (BuildType::Ufs, run_build_ufs as Build)
+            (BuildType::Ufs, run_build_fs as Build)
+        } else if t.pcfs.is_some() {
+            (BuildType::Pcfs, run_build_fs as Build)
         } else if t.iso.is_some() {
             (BuildType::Iso, run_build_iso as Build)
         } else {
@@ -1284,11 +1319,17 @@ impl ShadowFile {
     }
 }
 
+enum Fstyp {
+    Ufs(Ufs),
+    Pcfs(Pcfs),
+}
+
 enum BuildType {
     Pool(String),
     Dataset,
     Ufs,
     Iso,
+    Pcfs,
 }
 
 struct ImageBuilder {
@@ -1326,10 +1367,10 @@ impl ImageBuilder {
              */
             BuildType::Pool(_) => s + "/a",
             /*
-             * When a template targets a UFS, files target the mountpoint of
-             * the UFS file system we create on the lofi device.
+             * When a template targets a UFS or a FAT file system, files target
+             * the mountpoint of the file system we create on the lofi device.
              */
-            BuildType::Ufs => s + "/a",
+            BuildType::Ufs | BuildType::Pcfs => s + "/a",
             /*
              * ISO Files are not created using a lofi device, so we can just
              * use the temporary dataset.
@@ -1429,6 +1470,12 @@ struct Ufs {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+struct Pcfs {
+    label: String,
+    size: usize,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 struct Pool {
     name: String,
     ashift: Option<u8>,
@@ -1496,6 +1543,7 @@ struct Template {
     dataset: Option<Dataset>,
     pool: Option<Pool>,
     ufs: Option<Ufs>,
+    pcfs: Option<Pcfs>,
     iso: Option<Iso>,
     steps: Vec<Step>,
 }
