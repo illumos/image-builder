@@ -1805,19 +1805,12 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let targmp = mp.to_str().unwrap();
 
                 /*
-                 * Device file stuff?
-                 * XXX Is this really necessary?
+                 * Create expected /dev structure.  Note that this can leak some
+                 * amount of device information from the live system into the
+                 * image; templates should clean up any unexpected links or
+                 * nodes.
                  */
                 ensure::run(log, &["/usr/sbin/devfsadm", "-r", &targmp])?;
-                /*
-                 * XXX Clear out:
-                 *  /dev/dsk/
-                 *  /dev/rdsk/
-                 *  /dev/removable-media/dsk/
-                 *  /dev/removable-media/rdsk/
-                 *  /dev/cfg/
-                 *  /dev/usb/
-                 */
             }
             "assemble_files" => {
                 let mp = ib.root()?;
