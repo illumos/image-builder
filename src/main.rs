@@ -1695,10 +1695,26 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 #[derive(Deserialize)]
                 struct UnpackTarArgs {
                     name: String,
+                    into_tmp: Option<bool>,
                 }
 
                 let a: UnpackTarArgs = step.args()?;
-                let mp = ib.root()?;
+                let targdir = if a.into_tmp.unwrap_or(false) {
+                    /*
+                     * Store unpacked files in a temporary directory so that
+                     * "ensure_file" steps can access the unpacked files using
+                     * the "tarsrc" source.
+                     */
+                    let dir = ib.tmp_file("unpack_tar")?;
+                    if dir.exists() {
+                        std::fs::remove_dir_all(&dir)?;
+                    }
+                    std::fs::create_dir(&dir)?;
+                    dir.to_str().unwrap().to_string()
+                } else {
+                    let mp = ib.root()?;
+                    mp.to_str().unwrap().to_string()
+                };
 
                 /*
                  * Unpack a tar file of an image created by another build:
@@ -1707,7 +1723,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 ensure::run(log,
                     &["/usr/sbin/tar", "xzeEp@/f",
                         &tarf.to_str().unwrap(),
-                        "-C", &mp.to_str().unwrap()])?;
+                        "-C", &targdir])?;
             }
             "pack_tar" => {
                 #[derive(Deserialize)]
@@ -2048,6 +2064,8 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 struct FileArgs {
                     src: Option<String>,
                     imagesrc: Option<String>,
+                    tarsrc: Option<String>,
+                    outputsrc: Option<String>,
                     contents: Option<String>,
                     file: String,
                     owner: String,
@@ -2067,20 +2085,62 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let mode = u32::from_str_radix(&a.mode, 8)?;
 
                 if let Some(src) = &a.src {
+                    /*
+                     * "src" specifies a source file from within the template
+                     * directory structure, whether at the top level or at the
+                     * group-specific level.
+                     */
                     if src.starts_with('/') {
                         bail!("source file must be a relative path");
                     }
                     let src = ib.template_file(src)?;
                     ensure::file(log, &src, &file, owner, group,
                         mode, Create::Always)?;
+                } else if let Some(outputsrc) = &a.outputsrc {
+                    /*
+                     * "outputsrc" specifies a source file from within the
+                     * output area.  Useful for including the output of a
+                     * previous build (e.g., an EFI system partition) as a file
+                     * in the target image (e.g., a bootable ISO).
+                     */
+                    if outputsrc.starts_with('/') {
+                        bail!("output source file must be a relative path");
+                    }
+                    let src = ib.output_file(outputsrc)?;
+                    ensure::file(log, &src, &file, owner, group,
+                        mode, Create::Always)?;
                 } else if let Some(imagesrc) = &a.imagesrc {
+                    /*
+                     * "imagesrc" specifies a source file that already exists
+                     * within the image.  Can be used to make a copy of an
+                     * existing file at another location.
+                     */
                     if !imagesrc.starts_with('/') {
                         bail!("image source file must be fully qualified");
                     }
                     let src = format!("{}{}", targmp, imagesrc);
                     ensure::file(log, &src, &file, owner, group,
                         mode, Create::Always)?;
+                } else if let Some(tarsrc) = &a.tarsrc {
+                    /*
+                     * "tarsrc" specifies a file in the temporary directory
+                     * created by the last "unpack_tar" action that used
+                     * "into_tmp".  This can be used to unpack a tar file and
+                     * then copy select files from inside that archive to new
+                     * names and paths within the target image.
+                     */
+                    if !tarsrc.starts_with('/') {
+                        bail!("tmp tar source file must be fully qualified");
+                    }
+                    let tardir = ib.tmp_file("unpack_tar")?;
+                    let src = format!("{}{}", tardir.to_str().unwrap(), tarsrc);
+                    ensure::file(log, &src, &file, owner, group,
+                        mode, Create::Always)?;
                 } else if let Some(contents) = &a.contents {
+                    /*
+                     * "contents" provides a literal string in the template to
+                     * construct the target file.
+                     */
                     ensure::filestr(log, &contents, &file, owner, group,
                         mode, Create::Always)?;
                 } else {
