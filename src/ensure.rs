@@ -620,6 +620,12 @@ where
         cmd.env_remove("LC_MONETARY");
         cmd.env_remove("LC_MESSAGES");
         cmd.env_remove("LC_ALL");
+
+        /*
+         * Run everything in the C.UTF-8 locale, rather than the default of C,
+         * so that UTF-8 characters work correctly in path names.
+         */
+        cmd.env("LC_ALL", "C.UTF-8");
     }
 
     if args.len() > 1 {
