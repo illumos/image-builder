@@ -2519,6 +2519,27 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     &a.publisher,
                 ])?;
             }
+            "pkg_set_p5p_publisher" => {
+                #[derive(Deserialize)]
+                struct PkgSetP5PPublisherArgs {
+                    archive: String,
+                    publisher: String,
+                }
+
+                let a: PkgSetP5PPublisherArgs = step.args()?;
+                let mp = ib.root()?;
+
+                pkg(log, &["-R", &mp.to_str().unwrap(),
+                    "set-publisher", "-p", &a.archive, "--search-first",
+                ])?;
+                pkg(log, &["-R", &mp.to_str().unwrap(), "set-publisher",
+                    "--no-refresh",
+                    "--non-sticky",
+                    &a.publisher,
+                ])?;
+                pkg(log, &["-R", &mp.to_str().unwrap(), "refresh", "--full"])?;
+                pkg(log, &["-R", &mp.to_str().unwrap(), "update"])?;
+            }
             "pkg_approve_ca_cert" => {
                 #[derive(Deserialize)]
                 struct PkgApproveCaCertArgs {
