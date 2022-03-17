@@ -2507,23 +2507,58 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 #[derive(Deserialize)]
                 struct PkgSetPublisherArgs {
                     publisher: String,
-                    uri: String,
+                    uri: Option<String>,
+                    sticky: Option<bool>,
                 }
 
                 let a: PkgSetPublisherArgs = step.args()?;
                 let mp = ib.root()?;
 
-                pkg(log, &["-R", &mp.to_str().unwrap(), "set-publisher",
+                let mut args = vec![
+                    "-R", &mp.to_str().unwrap(), "set-publisher",
                     "--no-refresh",
-                    "-O", &a.uri,
-                    &a.publisher,
-                ])?;
+                ];
+
+                if let Some(ref uri) = a.uri {
+                    args.push("-O");
+                    args.push(uri);
+                }
+
+                if let Some(sticky) = a.sticky {
+                    match sticky {
+                        true => args.push("--sticky"),
+                        false => args.push("--non-sticky"),
+                    }
+                }
+
+                args.push(&a.publisher);
+
+                pkg(log, &args)?;
+            }
+            "pkg_refresh" => {
+                #[derive(Deserialize)]
+                struct PkgRefreshArgs {
+                    full: bool,
+                }
+
+                let a: PkgRefreshArgs = step.args()?;
+                let mp = ib.root()?;
+
+                let mut args = vec!["-R", &mp.to_str().unwrap(), "refresh"];
+                if a.full {
+                    args.push("--full")
+                }
+
+                pkg(log, &args)?;
+            }
+            "pkg_update" => {
+                let mp = ib.root()?;
+                pkg(log, &["-R", &mp.to_str().unwrap(), "update"])?;
             }
             "pkg_set_p5p_publisher" => {
                 #[derive(Deserialize)]
                 struct PkgSetP5PPublisherArgs {
                     archive: String,
-                    publisher: String,
                 }
 
                 let a: PkgSetP5PPublisherArgs = step.args()?;
@@ -2532,13 +2567,6 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 pkg(log, &["-R", &mp.to_str().unwrap(),
                     "set-publisher", "-p", &a.archive, "--search-first",
                 ])?;
-                pkg(log, &["-R", &mp.to_str().unwrap(), "set-publisher",
-                    "--no-refresh",
-                    "--non-sticky",
-                    &a.publisher,
-                ])?;
-                pkg(log, &["-R", &mp.to_str().unwrap(), "refresh", "--full"])?;
-                pkg(log, &["-R", &mp.to_str().unwrap(), "update"])?;
             }
             "pkg_approve_ca_cert" => {
                 #[derive(Deserialize)]
