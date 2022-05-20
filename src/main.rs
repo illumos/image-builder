@@ -301,7 +301,7 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
 
     let iso = ib.template.iso.as_ref().unwrap();
 
-    if iso.hybrid.is_some() && !iso.boot_uefi.is_some() {
+    if iso.hybrid.is_some() && iso.boot_uefi.is_none() {
         /*
          * XXX Due to limitations in installboot(1M), it is not presently
          * possible to specify a device path for boot loader installation unless
@@ -342,8 +342,8 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
         args.push("-no-emul-boot");
     }
     args.push("-o");
-    args.push(&imagefile.to_str().unwrap());
-    args.push(&rmp.to_str().unwrap());
+    args.push(imagefile.to_str().unwrap());
+    args.push(rmp.to_str().unwrap());
     ensure::run(&ib.log, &args)?;
 
     /*
@@ -352,7 +352,7 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
      * of the ISO image.
      */
     if let Some(hybrid) = iso.hybrid.as_ref() {
-        if !iso.boot_uefi.is_some() {
+        if iso.boot_uefi.is_none() {
             bail!("hybrid images must support UEFI at present");
         }
 
@@ -490,7 +490,7 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
         Fstyp::Ufs(ufs) => {
             ensure::run(log, &["/usr/sbin/newfs", "-o", "space", "-m", "0",
                 "-i", &ufs.inode_density.to_string(), "-b", "4096",
-                &ldev.to_str().unwrap()])?;
+                ldev.to_str().unwrap()])?;
             "nologging,noatime"
         }
         Fstyp::Pcfs(pcfs) => {
@@ -501,7 +501,7 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
             let secsize = size * 1024 * 1024 / 512;
             ensure::run(log, &["/usr/sbin/mkfs", "-F", "pcfs", "-o",
                 &format!("b={},nofdisk,size={}", pcfs.label, secsize),
-                &lrdev.to_str().unwrap()])?;
+                lrdev.to_str().unwrap()])?;
             "noatime"
         }
     };
@@ -509,7 +509,7 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
     ensure::directory(log, &rmp, ROOT, ROOT, 0o755)?;
 
     ensure::run(log, &["/usr/sbin/mount", "-F", fsname, "-o", mntopts,
-        &ldev.to_str().unwrap(), &rmp.to_str().unwrap()])?;
+        ldev.to_str().unwrap(), rmp.to_str().unwrap()])?;
 
     /*
      * Now that we have created the file system, run the steps for this
@@ -528,14 +528,14 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
          * Only UFS has inodes.
          */
         ensure::run(&ib.log, &["/usr/bin/df", "-o", "i",
-            &rmp.to_str().unwrap()])?;
+            rmp.to_str().unwrap()])?;
     }
-    ensure::run(&ib.log, &["/usr/bin/df", "-h", &rmp.to_str().unwrap()])?;
+    ensure::run(&ib.log, &["/usr/bin/df", "-h", rmp.to_str().unwrap()])?;
 
     /*
      * Unmount the file system and detach the lofi device.
      */
-    ensure::run(&ib.log, &["/sbin/umount", &rmp.to_str().unwrap()])?;
+    ensure::run(&ib.log, &["/sbin/umount", rmp.to_str().unwrap()])?;
     lofi::lofi_unmap_device(&ldev)?;
 
     /*
@@ -632,7 +632,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
 
     let targpool = ib.target_pool();
     args.push(&targpool);
-    args.push(&disk);
+    args.push(disk);
 
     ensure::run(log, args.as_slice())?;
 
@@ -748,7 +748,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
 
             Ok(if o.is_empty() {
                 bail!("-f requires an argument");
-            } else if o.chars().next().unwrap() == '^' {
+            } else if o.starts_with('^') {
                 /*
                  * This is a negated feature; i.e., -F ^BLAH
                  */
@@ -840,7 +840,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
             \"pool\", or \"iso\"");
     }
 
-    if !t.dataset.is_some() {
+    if t.dataset.is_none() {
         let workds = format!("{}/work/{}/{}", ibrootds, group, output_name);
         info!(log, "work dataset: {}", workds);
 
@@ -918,7 +918,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         bename,
         group: group.clone(),
         name: name.clone(),
-        output_name: output_name.clone(),
+        output_name,
         template_root,
         template: t.clone(),
         workds: workds.clone(),
@@ -1977,7 +1977,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let targmp = ib.root()?;
                 ensure::directory(log, &targmp, ROOT, ROOT, 0o755)?;
                 ensure::run(log, &["/sbin/mount", "-F", "zfs", &beds,
-                    &targmp.to_str().unwrap()])?;
+                    targmp.to_str().unwrap()])?;
 
                 /*
                  * Set some BE properties...
@@ -1998,7 +1998,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let ds = format!("{}/{}", ib.temp_pool(), a.name);
                 dataset_create(log, &ds, false)?;
                 if let Some(mp) = &a.mountpoint {
-                    zfs_set(log, &ds, "mountpoint", &mp)?;
+                    zfs_set(log, &ds, "mountpoint", mp)?;
                 }
             }
             "remove_files" => {
@@ -2095,7 +2095,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let tarf = ib.output_file(&name)?;
                 ensure::run(log,
                     &["/usr/sbin/tar", "xzeEp@/f",
-                        &tarf.to_str().unwrap(),
+                        tarf.to_str().unwrap(),
                         "-C", &targdir])?;
             }
             "pack_tar" => {
@@ -2117,16 +2117,16 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 ensure::removed(log, &tarf)?;
 
                 let mut args = vec!["/usr/sbin/tar", "czeEp@/f",
-                    &tarf.to_str().unwrap()];
+                    tarf.to_str().unwrap()];
                 if let Some(include) = &a.include {
                     include.iter().for_each(|s| {
                         args.push("-C");
-                        args.push(&mp.to_str().unwrap());
+                        args.push(mp.to_str().unwrap());
                         args.push(s.as_str());
                     });
                 } else {
                     args.push("-C");
-                    args.push(&mp.to_str().unwrap());
+                    args.push(mp.to_str().unwrap());
                     args.push(".");
                 }
                 ensure::run(log, &args)?;
@@ -2148,31 +2148,31 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                  * Upgrade to onu bits:
                  */
                 let publ = "on-nightly";
-                pkg(log, &["-R", &targmp, "set-publisher",
+                pkg(log, &["-R", targmp, "set-publisher",
                     "--no-refresh",
                     "--non-sticky",
                     &a.publisher,
                 ])?;
-                pkg(log, &["-R", &targmp, "set-publisher",
+                pkg(log, &["-R", targmp, "set-publisher",
                     "-e",
                     "--no-refresh",
                     "-P",
                     "-O", &a.repo,
                     publ,
                 ])?;
-                pkg(log, &["-R", &targmp, "refresh", "--full"])?;
+                pkg(log, &["-R", targmp, "refresh", "--full"])?;
                 if !a.uninstall.is_empty() {
-                    let mut args = vec!["-R", &targmp, "uninstall"];
+                    let mut args = vec!["-R", targmp, "uninstall"];
                     for pkg in a.uninstall.iter() {
                         args.push(pkg.as_str());
                     }
                     pkg(log, &args)?;
                 }
-                pkg(log, &["-R", &targmp, "change-facet",
+                pkg(log, &["-R", targmp, "change-facet",
                     "onu.ooceonly=false"
                 ])?;
-                pkg(log, &["-R", &targmp, "update"])?;
-                pkg(log, &["-R", &targmp, "purge-history"])?;
+                pkg(log, &["-R", targmp, "update"])?;
+                pkg(log, &["-R", targmp, "purge-history"])?;
             }
             "devfsadm" => {
                 let mp = ib.root()?;
@@ -2184,7 +2184,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                  * image; templates should clean up any unexpected links or
                  * nodes.
                  */
-                ensure::run(log, &["/usr/sbin/devfsadm", "-r", &targmp])?;
+                ensure::run(log, &["/usr/sbin/devfsadm", "-r", targmp])?;
             }
             "assemble_files" => {
                 let mp = ib.root()?;
@@ -2371,7 +2371,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 }
                 let link = format!("{}{}", targmp, a.link);
 
-                ensure::symlink(&log, &link, &a.target, owner, group)?;
+                ensure::symlink(log, &link, &a.target, owner, group)?;
             }
             "ensure_perms" => {
                 let mp = ib.root()?;
@@ -2508,7 +2508,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                      * "contents" provides a literal string in the template to
                      * construct the target file.
                      */
-                    ensure::filestr(log, &contents, &file, owner, group,
+                    ensure::filestr(log, contents, &file, owner, group,
                         mode, Create::Always)?;
                 } else {
                     bail!("must specify either \"src\" or \"contents\"");
@@ -2524,9 +2524,9 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 ensure::run(log, &["/sbin/beadm", "activate", ib.bename()])?;
                 ensure::run(log, &["/sbin/bootadm", "install-bootloader",
-                    "-M", "-f", "-P", &ib.temp_pool(), "-R", &targmp])?;
+                    "-M", "-f", "-P", &ib.temp_pool(), "-R", targmp])?;
                 ensure::run(log, &["/sbin/bootadm", "update-archive",
-                    "-f", "-R", &targmp])?;
+                    "-f", "-R", targmp])?;
             }
             "pkg_image_create" => {
                 #[derive(Deserialize)]
@@ -2539,7 +2539,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let mp = ib.root()?;
                 pkg(log, &["image-create", "--full",
                     "--publisher", &format!("{}={}", a.publisher, a.uri),
-                    &mp.to_str().unwrap()])?;
+                    mp.to_str().unwrap()])?;
             }
             "pkg_install" => {
                 #[derive(Deserialize)]
@@ -2553,7 +2553,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let mp = ib.root()?;
 
                 let pkgs: Vec<_> = a.pkgs.iter().map(|s| s.as_str()).collect();
-                pkg_install(log, &mp.to_str().unwrap(), pkgs.as_slice())?;
+                pkg_install(log, mp.to_str().unwrap(), pkgs.as_slice())?;
 
                 if a.include_optional {
                     let mut pkgs = Vec::new();
@@ -2568,7 +2568,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                      */
                     for pkg in a.pkgs.iter() {
                         let opts = pkg_optional_deps(log,
-                            &mp.to_str().unwrap(),
+                            mp.to_str().unwrap(),
                             pkg.as_str())?;
 
                         for opt in opts.iter() {
@@ -2585,7 +2585,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                         let pkgs: Vec<_> = pkgs.iter().map(|s| s.as_str())
                             .collect();
                         pkg_install(log,
-                            &mp.to_str().unwrap(),
+                            mp.to_str().unwrap(),
                             pkgs.as_slice())?;
                     }
                 }
@@ -2600,7 +2600,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: PkgSetPropertyArgs = step.args()?;
                 let mp = ib.root()?;
 
-                pkg(log, &["-R", &mp.to_str().unwrap(), "set-property",
+                pkg(log, &["-R", mp.to_str().unwrap(), "set-property",
                     &a.name,
                     &a.value,
                 ])?;
@@ -2615,7 +2615,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: PkgSetPublisherArgs = step.args()?;
                 let mp = ib.root()?;
 
-                pkg(log, &["-R", &mp.to_str().unwrap(), "set-publisher",
+                pkg(log, &["-R", mp.to_str().unwrap(), "set-publisher",
                     "--no-refresh",
                     "-O", &a.uri,
                     &a.publisher,
@@ -2640,7 +2640,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let cacert = ib.template_file(&a.certfile)?
                     .to_str().unwrap().to_string();
 
-                pkg(log, &["-R", &mp.to_str().unwrap(), "set-publisher",
+                pkg(log, &["-R", mp.to_str().unwrap(), "set-publisher",
                     &format!("--approve-ca-cert={}", &cacert),
                     &a.publisher,
                 ])?;
@@ -2654,7 +2654,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: PkgUninstallArgs = step.args()?;
                 let mp = ib.root()?;
                 let pkgs: Vec<_> = a.pkgs.iter().map(|s| s.as_str()).collect();
-                pkg_uninstall(log, &mp.to_str().unwrap(), pkgs.as_slice())?;
+                pkg_uninstall(log, mp.to_str().unwrap(), pkgs.as_slice())?;
             }
             "pkg_change_variant" => {
                 #[derive(Deserialize)]
@@ -2665,7 +2665,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 let a: PkgChangeVariantArgs = step.args()?;
                 let mp = ib.root()?;
-                pkg_ensure_variant(log, &mp.to_str().unwrap(),
+                pkg_ensure_variant(log, mp.to_str().unwrap(),
                     &a.variant, &a.value)?;
             }
             "pkg_change_facet" => {
@@ -2677,12 +2677,12 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 let a: PkgChangeFacetArgs = step.args()?;
                 let mp = ib.root()?;
-                pkg_ensure_facet(log, &mp.to_str().unwrap(),
+                pkg_ensure_facet(log, mp.to_str().unwrap(),
                     &a.facet, &a.value)?;
             }
             "pkg_purge_history" => {
                 let mp = ib.root()?;
-                pkg(log, &["-R", &mp.to_str().unwrap(), "purge-history"])?;
+                pkg(log, &["-R", mp.to_str().unwrap(), "purge-history"])?;
             }
             "seed_smf" => {
                 #[derive(Deserialize)]
