@@ -74,6 +74,7 @@ fn main() -> Result<()> {
             opts.optflag("x", "fullreset", "destroy dataset");
             opts.reqopt("g", "group", "group name", "GROUPNAME");
             opts.reqopt("n", "name", "image name", "IMAGENAME");
+            opts.optopt("N", "output-name", "output image name", "IMAGENAME");
             opts.reqopt("d", "dataset", "root dataset for work", "DATASET");
             opts.optopt("T", "templates", "directory for templates", "DIR");
             opts.optopt("S", "svccfg", "svccfg-native location", "SVCCFG");
@@ -408,7 +409,7 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
      * Copy the image file to the output directory.
      */
     let outputfile = ib.output_file(&format!("{}-{}.iso", ib.group,
-        ib.name))?;
+        ib.output_name))?;
 
     info!(ib.log, "copying image {} to output file {}",
         imagefile.display(), outputfile.display());
@@ -537,7 +538,7 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
      * Copy the image file to the output directory.
      */
     let outputfile = ib.output_file(&format!("{}-{}.{}", ib.group,
-        ib.name, fsname))?;
+        ib.output_name, fsname))?;
 
     info!(ib.log, "copying image {} to output file {}",
         imagefile.display(), outputfile.display());
@@ -654,7 +655,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
 
     if ib.template.pool.as_ref().unwrap().partition_only.unwrap_or(false) {
         let outpartfile = ib.output_file(&format!("{}-{}.partonly", ib.group,
-            ib.name))?;
+            ib.output_name))?;
         ensure::removed(&ib.log, &outpartfile)?;
         info!(ib.log, "extract just the ZFS partition to {:?}", outpartfile);
 
@@ -679,7 +680,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
      * Copy the image file to the output directory.
      */
     let outputfile = ib.output_file(&format!("{}-{}.raw", ib.group,
-        ib.name))?;
+        ib.output_name))?;
 
     info!(ib.log, "copying image {} to output file {}",
         imagefile.display(), outputfile.display());
@@ -715,6 +716,15 @@ fn find_template_root(arg: Option<String>) -> Result<PathBuf> {
 fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     let group = mat.opt_str("g").unwrap();
     let name = mat.opt_str("n").unwrap();
+    let output_name = if let Some(n) = mat.opt_str("N") {
+        /*
+         * Allow the user to override the name we use for the work area and
+         * output files, as distinct from the template name.
+         */
+        n
+    } else {
+        name.clone()
+    };
     let ibrootds = mat.opt_str("d").unwrap();
     let fullreset = mat.opt_present("x");
     let reset = mat.opt_present("r");
@@ -752,7 +762,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         dataset_create(log, &outputds, false)?;
     }
 
-    let tmpds = format!("{}/tmp/{}/{}", ibrootds, group, name);
+    let tmpds = format!("{}/tmp/{}/{}", ibrootds, group, output_name);
     info!(log, "temporary dataset: {}", tmpds);
     if dataset_exists(&tmpds)? {
         dataset_remove(log, &tmpds)?;
@@ -783,7 +793,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     }
 
     if !t.dataset.is_some() {
-        let workds = format!("{}/work/{}/{}", ibrootds, group, name);
+        let workds = format!("{}/work/{}/{}", ibrootds, group, output_name);
         info!(log, "work dataset: {}", workds);
 
         if !dataset_exists(&workds)? {
@@ -824,6 +834,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
             bename,
             group,
             name,
+            output_name,
             template_root,
             template: t,
             workds,
@@ -859,6 +870,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         bename,
         group: group.clone(),
         name: name.clone(),
+        output_name: output_name.clone(),
         template_root,
         template: t.clone(),
         workds: workds.clone(),
@@ -1552,6 +1564,7 @@ struct ImageBuilder {
 
     group: String,
     name: String,
+    output_name: String,
 
     log: Logger,
     template_root: PathBuf,
@@ -1609,7 +1622,7 @@ impl ImageBuilder {
      */
     fn temp_pool(&self) -> String {
         if let BuildType::Pool(_) = &self.build_type {
-            format!("TEMPORARY-{}-{}", self.group, self.name)
+            format!("TEMPORARY-{}-{}", self.group, self.output_name)
         } else {
             panic!("not a pool job");
         }
