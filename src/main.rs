@@ -1942,13 +1942,15 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
          */
         if let Some(feature) = step.with.as_deref() {
             if !ib.feature_enabled(feature) {
-                info!(log, "skip step because feature {:?} is not enabled", feature);
+                info!(log, "skip step because feature {:?} is not enabled",
+                    feature);
                 continue;
             }
         }
         if let Some(feature) = step.without.as_deref() {
             if ib.feature_enabled(feature) {
-                info!(log, "skip step because feature {:?} is enabled", feature);
+                info!(log, "skip step because feature {:?} is enabled",
+                    feature);
                 continue;
             }
         }
@@ -2141,6 +2143,8 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 }
 
                 let a: OnuArgs = step.args()?;
+                let repo = ib.expand(&a.repo)?;
+                let publisher = ib.expand(&a.publisher)?;
                 let mp = ib.root()?;
                 let targmp = mp.to_str().unwrap();
 
@@ -2151,13 +2155,13 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 pkg(log, &["-R", targmp, "set-publisher",
                     "--no-refresh",
                     "--non-sticky",
-                    &a.publisher,
+                    &publisher,
                 ])?;
                 pkg(log, &["-R", targmp, "set-publisher",
                     "-e",
                     "--no-refresh",
                     "-P",
-                    "-O", &a.repo,
+                    "-O", &repo,
                     publ,
                 ])?;
                 pkg(log, &["-R", targmp, "refresh", "--full"])?;
