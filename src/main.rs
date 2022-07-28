@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 Oxide Computer Company
+ * Copyright 2022 Oxide Computer Company
  */
 
 use std::process::{Command, Stdio, exit};
@@ -15,6 +15,7 @@ mod lofi;
 mod ensure;
 mod illumos;
 mod expand;
+mod fmri;
 
 use ensure::{Create, HashType};
 use expand::Expansion;
@@ -1369,8 +1370,8 @@ fn pkg_uninstall(log: &Logger, root: &str, packages: &[&str]) -> Result<()> {
     ensure::run(log, &newargs)
 }
 
-fn pkg_optional_deps(_log: &Logger, root: &str, package: &str)
-    -> Result<Vec<String>>
+fn pkg_optional_deps(_log: &Logger, root: &str, package: &str,
+    strip_publisher: bool) -> Result<Vec<String>>
 {
     let cmd = Command::new("/usr/bin/pkg")
         .env_clear()
@@ -1389,7 +1390,17 @@ fn pkg_optional_deps(_log: &Logger, root: &str, package: &str)
     }
 
     let out = String::from_utf8(cmd.stdout)?;
-    Ok(out.lines().map(|s| s.trim().to_string()).collect())
+    Ok(out
+        .lines()
+        .map(|s| fmri::Package::parse_fmri(s))
+        .collect::<Result<Vec<_>>>()?
+        .iter()
+        .map(|p| if strip_publisher {
+            p.to_string_without_publisher()
+        } else {
+            p.to_string()
+        })
+        .collect())
 }
 
 fn pkg_ensure_variant(log: &Logger, root: &str, variant: &str, value: &str)
@@ -2551,6 +2562,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     pkgs: Vec<String>,
                     #[serde(default)]
                     include_optional: bool,
+                    strip_optional_publishers: Option<bool>,
                 }
 
                 let a: PkgInstallArgs = step.args()?;
@@ -2563,6 +2575,13 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     let mut pkgs = Vec::new();
 
                     /*
+                     * By default it seems that IPS ignores the publisher in an
+                     * FMRI for a require dependency, and we should also.
+                     */
+                    let strip_publishers = a.strip_optional_publishers
+                        .unwrap_or(true);
+
+                    /*
                      * For each package, expand any optional dependencies and
                      * add those to the install list.
                      *
@@ -2573,15 +2592,16 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     for pkg in a.pkgs.iter() {
                         let opts = pkg_optional_deps(log,
                             mp.to_str().unwrap(),
-                            pkg.as_str())?;
+                            pkg.as_str(),
+                            strip_publishers)?;
 
-                        for opt in opts.iter() {
-                            if pkgs.contains(opt) {
+                        for opt in opts {
+                            if pkgs.contains(&opt) {
                                 continue;
                             }
 
                             info!(log, "optional package: {} -> {}", pkg, opt);
-                            pkgs.push(opt.to_string());
+                            pkgs.push(opt);
                         }
                     }
 
