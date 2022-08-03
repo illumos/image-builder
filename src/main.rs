@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 Oxide Computer Company
+ * Copyright 2022 Oxide Computer Company
  */
 
 use std::process::{Command, Stdio, exit};
@@ -14,8 +14,11 @@ use std::io::{Read, Write};
 mod lofi;
 mod ensure;
 mod illumos;
+mod expand;
+mod fmri;
 
 use ensure::{Create, HashType};
+use expand::Expansion;
 
 type Build = fn(ib: &mut ImageBuilder) -> Result<()>;
 
@@ -74,9 +77,12 @@ fn main() -> Result<()> {
             opts.optflag("x", "fullreset", "destroy dataset");
             opts.reqopt("g", "group", "group name", "GROUPNAME");
             opts.reqopt("n", "name", "image name", "IMAGENAME");
+            opts.optopt("N", "output-name", "output image name", "IMAGENAME");
             opts.reqopt("d", "dataset", "root dataset for work", "DATASET");
             opts.optopt("T", "templates", "directory for templates", "DIR");
             opts.optopt("S", "svccfg", "svccfg-native location", "SVCCFG");
+            opts.optmulti("F", "feature", "add or remove a feature definition",
+                "[^]FEATURE[=VALUE]");
 
             run_build
         }
@@ -296,7 +302,7 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
 
     let iso = ib.template.iso.as_ref().unwrap();
 
-    if iso.hybrid.is_some() && !iso.boot_uefi.is_some() {
+    if iso.hybrid.is_some() && iso.boot_uefi.is_none() {
         /*
          * XXX Due to limitations in installboot(1M), it is not presently
          * possible to specify a device path for boot loader installation unless
@@ -337,8 +343,8 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
         args.push("-no-emul-boot");
     }
     args.push("-o");
-    args.push(&imagefile.to_str().unwrap());
-    args.push(&rmp.to_str().unwrap());
+    args.push(imagefile.to_str().unwrap());
+    args.push(rmp.to_str().unwrap());
     ensure::run(&ib.log, &args)?;
 
     /*
@@ -347,7 +353,7 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
      * of the ISO image.
      */
     if let Some(hybrid) = iso.hybrid.as_ref() {
-        if !iso.boot_uefi.is_some() {
+        if iso.boot_uefi.is_none() {
             bail!("hybrid images must support UEFI at present");
         }
 
@@ -408,7 +414,7 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
      * Copy the image file to the output directory.
      */
     let outputfile = ib.output_file(&format!("{}-{}.iso", ib.group,
-        ib.name))?;
+        ib.output_name))?;
 
     info!(ib.log, "copying image {} to output file {}",
         imagefile.display(), outputfile.display());
@@ -485,7 +491,7 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
         Fstyp::Ufs(ufs) => {
             ensure::run(log, &["/usr/sbin/newfs", "-o", "space", "-m", "0",
                 "-i", &ufs.inode_density.to_string(), "-b", "4096",
-                &ldev.to_str().unwrap()])?;
+                ldev.to_str().unwrap()])?;
             "nologging,noatime"
         }
         Fstyp::Pcfs(pcfs) => {
@@ -496,7 +502,7 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
             let secsize = size * 1024 * 1024 / 512;
             ensure::run(log, &["/usr/sbin/mkfs", "-F", "pcfs", "-o",
                 &format!("b={},nofdisk,size={}", pcfs.label, secsize),
-                &lrdev.to_str().unwrap()])?;
+                lrdev.to_str().unwrap()])?;
             "noatime"
         }
     };
@@ -504,7 +510,7 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
     ensure::directory(log, &rmp, ROOT, ROOT, 0o755)?;
 
     ensure::run(log, &["/usr/sbin/mount", "-F", fsname, "-o", mntopts,
-        &ldev.to_str().unwrap(), &rmp.to_str().unwrap()])?;
+        ldev.to_str().unwrap(), rmp.to_str().unwrap()])?;
 
     /*
      * Now that we have created the file system, run the steps for this
@@ -523,21 +529,21 @@ fn run_build_fs(ib: &mut ImageBuilder) -> Result<()> {
          * Only UFS has inodes.
          */
         ensure::run(&ib.log, &["/usr/bin/df", "-o", "i",
-            &rmp.to_str().unwrap()])?;
+            rmp.to_str().unwrap()])?;
     }
-    ensure::run(&ib.log, &["/usr/bin/df", "-h", &rmp.to_str().unwrap()])?;
+    ensure::run(&ib.log, &["/usr/bin/df", "-h", rmp.to_str().unwrap()])?;
 
     /*
      * Unmount the file system and detach the lofi device.
      */
-    ensure::run(&ib.log, &["/sbin/umount", &rmp.to_str().unwrap()])?;
+    ensure::run(&ib.log, &["/sbin/umount", rmp.to_str().unwrap()])?;
     lofi::lofi_unmap_device(&ldev)?;
 
     /*
      * Copy the image file to the output directory.
      */
     let outputfile = ib.output_file(&format!("{}-{}.{}", ib.group,
-        ib.name, fsname))?;
+        ib.output_name, fsname))?;
 
     info!(ib.log, "copying image {} to output file {}",
         imagefile.display(), outputfile.display());
@@ -627,7 +633,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
 
     let targpool = ib.target_pool();
     args.push(&targpool);
-    args.push(&disk);
+    args.push(disk);
 
     ensure::run(log, args.as_slice())?;
 
@@ -654,7 +660,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
 
     if ib.template.pool.as_ref().unwrap().partition_only.unwrap_or(false) {
         let outpartfile = ib.output_file(&format!("{}-{}.partonly", ib.group,
-            ib.name))?;
+            ib.output_name))?;
         ensure::removed(&ib.log, &outpartfile)?;
         info!(ib.log, "extract just the ZFS partition to {:?}", outpartfile);
 
@@ -679,7 +685,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
      * Copy the image file to the output directory.
      */
     let outputfile = ib.output_file(&format!("{}-{}.raw", ib.group,
-        ib.name))?;
+        ib.output_name))?;
 
     info!(ib.log, "copying image {} to output file {}",
         imagefile.display(), outputfile.display());
@@ -715,10 +721,63 @@ fn find_template_root(arg: Option<String>) -> Result<PathBuf> {
 fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     let group = mat.opt_str("g").unwrap();
     let name = mat.opt_str("n").unwrap();
+    let output_name = if let Some(n) = mat.opt_str("N") {
+        /*
+         * Allow the user to override the name we use for the work area and
+         * output files, as distinct from the template name.
+         */
+        n
+    } else {
+        name.clone()
+    };
     let ibrootds = mat.opt_str("d").unwrap();
     let fullreset = mat.opt_present("x");
     let reset = mat.opt_present("r");
     let template_root = find_template_root(mat.opt_str("T"))?;
+
+    /*
+     * Process feature directives in the order in which they appear.  Directives
+     * can override the value of previous definitions, and can remove a feature
+     * already defined, to hopefully easily enable argument lists to be
+     * constructed in control programs that override default values.
+     *
+     */
+    let mut feature_directives = mat.opt_strs("F")
+        .iter()
+        .map(|o| {
+            let o = o.trim();
+
+            Ok(if o.is_empty() {
+                bail!("-f requires an argument");
+            } else if o.starts_with('^') {
+                /*
+                 * This is a negated feature; i.e., -F ^BLAH
+                 */
+                if o.contains('=') {
+                    bail!("-f with a negated feature cannot have a value");
+                }
+                (o.chars().skip(1).collect::<String>(), None)
+            } else if let Some((f, v)) = o.split_once('=') {
+                /*
+                 * This is an enabled feature with a value; i.e., -F BLAH=YES
+                 */
+                (f.trim().to_string(), Some(v.to_string()))
+            } else {
+                /*
+                 * This is an enabled feature with no value; i.e., -F BLAH
+                 * Just set it to "1", as if the user had passed: -F BLAH=1
+                 */
+                (o.to_string(), Some("1".to_string()))
+            })
+        }).collect::<Result<Vec<_>>>()?;
+    let mut features = HashMap::new();
+    for (f, v) in feature_directives.drain(..) {
+        if let Some(v) = v {
+            features.insert(f, v);
+        } else {
+            features.remove(&f);
+        }
+    }
 
     /*
      * Using the system svccfg(1M) is acceptable under some conditions, but not
@@ -752,7 +811,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         dataset_create(log, &outputds, false)?;
     }
 
-    let tmpds = format!("{}/tmp/{}/{}", ibrootds, group, name);
+    let tmpds = format!("{}/tmp/{}/{}", ibrootds, group, output_name);
     info!(log, "temporary dataset: {}", tmpds);
     if dataset_exists(&tmpds)? {
         dataset_remove(log, &tmpds)?;
@@ -782,8 +841,8 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
             \"pool\", or \"iso\"");
     }
 
-    if !t.dataset.is_some() {
-        let workds = format!("{}/work/{}/{}", ibrootds, group, name);
+    if t.dataset.is_none() {
+        let workds = format!("{}/work/{}/{}", ibrootds, group, output_name);
         info!(log, "work dataset: {}", workds);
 
         if !dataset_exists(&workds)? {
@@ -824,12 +883,14 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
             bename,
             group,
             name,
+            output_name,
             template_root,
             template: t,
             workds,
             outputds,
             tmpds,
             svccfg,
+            features,
             log: log.clone(),
         };
 
@@ -848,10 +909,9 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     }
 
     let dataset = t.dataset.as_ref().unwrap();
-    let input_snapshot = dataset.input_snapshot.as_deref();
-    let output_snapshot = dataset.output_snapshot.as_deref();
+    let dataset_name = Expansion::parse(&dataset.name)?.evaluate(&features)?;
 
-    let workds = format!("{}/work/{}/{}", ibrootds, group, dataset.name);
+    let workds = format!("{}/work/{}/{}", ibrootds, group, dataset_name);
     info!(log, "work dataset: {}", workds);
 
     let mut ib = ImageBuilder {
@@ -859,14 +919,19 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         bename,
         group: group.clone(),
         name: name.clone(),
+        output_name,
         template_root,
         template: t.clone(),
         workds: workds.clone(),
         outputds,
         tmpds,
         svccfg,
+        features,
         log: log.clone(),
     };
+
+    let input_snapshot = ib.expando(dataset.input_snapshot.as_deref())?;
+    let output_snapshot = ib.expando(dataset.output_snapshot.as_deref())?;
 
     if fullreset {
         info!(log, "resetting by removing work dataset: {}", workds);
@@ -878,7 +943,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
          * The dataset exists already.  If this template has configured an
          * output snapshot, we can roll back to it without doing any more work.
          */
-        if let Some(snap) = output_snapshot {
+        if let Some(snap) = output_snapshot.as_deref() {
             info!(log, "looking for output snapshot {}@{}", workds, snap);
             if snapshot_exists(&workds, snap)? && !reset {
                 snapshot_rollback(log, &workds, snap)?;
@@ -902,7 +967,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
          * If an input snapshot was specified, then we know how to reset the
          * dataset to a pristine state at which this build may begin.
          */
-        if let Some(snap) = &input_snapshot {
+        if let Some(snap) = input_snapshot.as_deref() {
             info!(log, "looking for input snapshot {}@{}", workds, snap);
             if snapshot_exists(&workds, snap)? {
                 snapshot_rollback(log, &workds, snap)?;
@@ -926,7 +991,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
 
     run_steps(&mut ib)?;
 
-    if let Some(snap) = &output_snapshot {
+    if let Some(snap) = output_snapshot.as_deref() {
         info!(log, "creating output snapshot {}@{}", workds, snap);
         snapshot_create(log, &workds, snap)?;
     }
@@ -1305,8 +1370,8 @@ fn pkg_uninstall(log: &Logger, root: &str, packages: &[&str]) -> Result<()> {
     ensure::run(log, &newargs)
 }
 
-fn pkg_optional_deps(_log: &Logger, root: &str, package: &str)
-    -> Result<Vec<String>>
+fn pkg_optional_deps(_log: &Logger, root: &str, package: &str,
+    strip_publisher: bool) -> Result<Vec<String>>
 {
     let cmd = Command::new("/usr/bin/pkg")
         .env_clear()
@@ -1325,7 +1390,17 @@ fn pkg_optional_deps(_log: &Logger, root: &str, package: &str)
     }
 
     let out = String::from_utf8(cmd.stdout)?;
-    Ok(out.lines().map(|s| s.trim().to_string()).collect())
+    Ok(out
+        .lines()
+        .map(|s| fmri::Package::parse_fmri(s))
+        .collect::<Result<Vec<_>>>()?
+        .iter()
+        .map(|p| if strip_publisher {
+            p.to_string_without_publisher()
+        } else {
+            p.to_string()
+        })
+        .collect())
 }
 
 fn pkg_ensure_variant(log: &Logger, root: &str, variant: &str, value: &str)
@@ -1552,6 +1627,7 @@ struct ImageBuilder {
 
     group: String,
     name: String,
+    output_name: String,
 
     log: Logger,
     template_root: PathBuf,
@@ -1562,6 +1638,8 @@ struct ImageBuilder {
     bename: String,
 
     svccfg: String,
+
+    features: HashMap<String, String>,
 }
 
 impl ImageBuilder {
@@ -1609,7 +1687,7 @@ impl ImageBuilder {
      */
     fn temp_pool(&self) -> String {
         if let BuildType::Pool(_) = &self.build_type {
-            format!("TEMPORARY-{}-{}", self.group, self.name)
+            format!("TEMPORARY-{}-{}", self.group, self.output_name)
         } else {
             panic!("not a pool job");
         }
@@ -1670,6 +1748,18 @@ impl ImageBuilder {
 
     fn bename(&self) -> &str {
         &self.bename
+    }
+
+    fn feature_enabled(&self, name: &str) -> bool {
+        self.features.contains_key(&name.to_string())
+    }
+
+    fn expando(&self, value: Option<&str>) -> Result<Option<String>> {
+        value.map(|value| self.expand(value)).transpose()
+    }
+
+    fn expand(&self, value: &str) -> Result<String> {
+        Ok(Expansion::parse(value)?.evaluate(&self.features)?)
     }
 }
 
@@ -1744,6 +1834,10 @@ struct Step {
     #[serde(skip, default)]
     f: String,
     t: String,
+    #[serde(default)]
+    with: Option<String>,
+    #[serde(default)]
+    without: Option<String>,
     #[serde(flatten)]
     extra: serde_json::Value,
 }
@@ -1853,6 +1947,25 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
     for (count, step) in ib.template.steps.iter().enumerate() {
         info!(log, "STEP {}: {}", count, step.t; "from" => &step.f);
 
+        /*
+         * If this step is dependent on being with or without a particular
+         * feature, check for the present of that feature:
+         */
+        if let Some(feature) = step.with.as_deref() {
+            if !ib.feature_enabled(feature) {
+                info!(log, "skip step because feature {:?} is not enabled",
+                    feature);
+                continue;
+            }
+        }
+        if let Some(feature) = step.without.as_deref() {
+            if ib.feature_enabled(feature) {
+                info!(log, "skip step because feature {:?} is enabled",
+                    feature);
+                continue;
+            }
+        }
+
         match step.t.as_str() {
             "create_be" => {
                 /*
@@ -1877,7 +1990,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let targmp = ib.root()?;
                 ensure::directory(log, &targmp, ROOT, ROOT, 0o755)?;
                 ensure::run(log, &["/sbin/mount", "-F", "zfs", &beds,
-                    &targmp.to_str().unwrap()])?;
+                    targmp.to_str().unwrap()])?;
 
                 /*
                  * Set some BE properties...
@@ -1898,7 +2011,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let ds = format!("{}/{}", ib.temp_pool(), a.name);
                 dataset_create(log, &ds, false)?;
                 if let Some(mp) = &a.mountpoint {
-                    zfs_set(log, &ds, "mountpoint", &mp)?;
+                    zfs_set(log, &ds, "mountpoint", mp)?;
                 }
             }
             "remove_files" => {
@@ -1971,6 +2084,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 }
 
                 let a: UnpackTarArgs = step.args()?;
+                let name = ib.expand(&a.name)?;
                 let targdir = if a.into_tmp.unwrap_or(false) {
                     /*
                      * Store unpacked files in a temporary directory so that
@@ -1991,10 +2105,10 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 /*
                  * Unpack a tar file of an image created by another build:
                  */
-                let tarf = ib.output_file(&a.name)?;
+                let tarf = ib.output_file(&name)?;
                 ensure::run(log,
                     &["/usr/sbin/tar", "xzeEp@/f",
-                        &tarf.to_str().unwrap(),
+                        tarf.to_str().unwrap(),
                         "-C", &targdir])?;
             }
             "pack_tar" => {
@@ -2005,26 +2119,27 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 }
 
                 let a: PackTarArgs = step.args()?;
+                let name = ib.expand(&a.name)?;
                 let mp = ib.root()?;
 
                 /*
                  * Create a tar file of the contents of the IPS image that we
                  * can subsequently unpack into ZFS pools or UFS file systems.
                  */
-                let tarf = ib.output_file(&a.name)?;
+                let tarf = ib.output_file(&name)?;
                 ensure::removed(log, &tarf)?;
 
                 let mut args = vec!["/usr/sbin/tar", "czeEp@/f",
-                    &tarf.to_str().unwrap()];
+                    tarf.to_str().unwrap()];
                 if let Some(include) = &a.include {
                     include.iter().for_each(|s| {
                         args.push("-C");
-                        args.push(&mp.to_str().unwrap());
+                        args.push(mp.to_str().unwrap());
                         args.push(s.as_str());
                     });
                 } else {
                     args.push("-C");
-                    args.push(&mp.to_str().unwrap());
+                    args.push(mp.to_str().unwrap());
                     args.push(".");
                 }
                 ensure::run(log, &args)?;
@@ -2039,6 +2154,8 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 }
 
                 let a: OnuArgs = step.args()?;
+                let repo = ib.expand(&a.repo)?;
+                let publisher = ib.expand(&a.publisher)?;
                 let mp = ib.root()?;
                 let targmp = mp.to_str().unwrap();
 
@@ -2046,31 +2163,31 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                  * Upgrade to onu bits:
                  */
                 let publ = "on-nightly";
-                pkg(log, &["-R", &targmp, "set-publisher",
+                pkg(log, &["-R", targmp, "set-publisher",
                     "--no-refresh",
                     "--non-sticky",
-                    &a.publisher,
+                    &publisher,
                 ])?;
-                pkg(log, &["-R", &targmp, "set-publisher",
+                pkg(log, &["-R", targmp, "set-publisher",
                     "-e",
                     "--no-refresh",
                     "-P",
-                    "-O", &a.repo,
+                    "-O", &repo,
                     publ,
                 ])?;
-                pkg(log, &["-R", &targmp, "refresh", "--full"])?;
+                pkg(log, &["-R", targmp, "refresh", "--full"])?;
                 if !a.uninstall.is_empty() {
-                    let mut args = vec!["-R", &targmp, "uninstall"];
+                    let mut args = vec!["-R", targmp, "uninstall"];
                     for pkg in a.uninstall.iter() {
                         args.push(pkg.as_str());
                     }
                     pkg(log, &args)?;
                 }
-                pkg(log, &["-R", &targmp, "change-facet",
+                pkg(log, &["-R", targmp, "change-facet",
                     "onu.ooceonly=false"
                 ])?;
-                pkg(log, &["-R", &targmp, "update"])?;
-                pkg(log, &["-R", &targmp, "purge-history"])?;
+                pkg(log, &["-R", targmp, "update"])?;
+                pkg(log, &["-R", targmp, "purge-history"])?;
             }
             "devfsadm" => {
                 let mp = ib.root()?;
@@ -2082,7 +2199,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                  * image; templates should clean up any unexpected links or
                  * nodes.
                  */
-                ensure::run(log, &["/usr/sbin/devfsadm", "-r", &targmp])?;
+                ensure::run(log, &["/usr/sbin/devfsadm", "-r", targmp])?;
             }
             "assemble_files" => {
                 let mp = ib.root()?;
@@ -2269,7 +2386,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 }
                 let link = format!("{}{}", targmp, a.link);
 
-                ensure::symlink(&log, &link, &a.target, owner, group)?;
+                ensure::symlink(log, &link, &a.target, owner, group)?;
             }
             "ensure_perms" => {
                 let mp = ib.root()?;
@@ -2406,7 +2523,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                      * "contents" provides a literal string in the template to
                      * construct the target file.
                      */
-                    ensure::filestr(log, &contents, &file, owner, group,
+                    ensure::filestr(log, contents, &file, owner, group,
                         mode, Create::Always)?;
                 } else {
                     bail!("must specify either \"src\" or \"contents\"");
@@ -2422,9 +2539,9 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 ensure::run(log, &["/sbin/beadm", "activate", ib.bename()])?;
                 ensure::run(log, &["/sbin/bootadm", "install-bootloader",
-                    "-M", "-f", "-P", &ib.temp_pool(), "-R", &targmp])?;
+                    "-M", "-f", "-P", &ib.temp_pool(), "-R", targmp])?;
                 ensure::run(log, &["/sbin/bootadm", "update-archive",
-                    "-f", "-R", &targmp])?;
+                    "-f", "-R", targmp])?;
             }
             "pkg_image_create" => {
                 #[derive(Deserialize)]
@@ -2437,7 +2554,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let mp = ib.root()?;
                 pkg(log, &["image-create", "--full",
                     "--publisher", &format!("{}={}", a.publisher, a.uri),
-                    &mp.to_str().unwrap()])?;
+                    mp.to_str().unwrap()])?;
             }
             "pkg_install" => {
                 #[derive(Deserialize)]
@@ -2445,16 +2562,24 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     pkgs: Vec<String>,
                     #[serde(default)]
                     include_optional: bool,
+                    strip_optional_publishers: Option<bool>,
                 }
 
                 let a: PkgInstallArgs = step.args()?;
                 let mp = ib.root()?;
 
                 let pkgs: Vec<_> = a.pkgs.iter().map(|s| s.as_str()).collect();
-                pkg_install(log, &mp.to_str().unwrap(), pkgs.as_slice())?;
+                pkg_install(log, mp.to_str().unwrap(), pkgs.as_slice())?;
 
                 if a.include_optional {
                     let mut pkgs = Vec::new();
+
+                    /*
+                     * By default it seems that IPS ignores the publisher in an
+                     * FMRI for a require dependency, and we should also.
+                     */
+                    let strip_publishers = a.strip_optional_publishers
+                        .unwrap_or(true);
 
                     /*
                      * For each package, expand any optional dependencies and
@@ -2466,16 +2591,17 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                      */
                     for pkg in a.pkgs.iter() {
                         let opts = pkg_optional_deps(log,
-                            &mp.to_str().unwrap(),
-                            pkg.as_str())?;
+                            mp.to_str().unwrap(),
+                            pkg.as_str(),
+                            strip_publishers)?;
 
-                        for opt in opts.iter() {
-                            if pkgs.contains(opt) {
+                        for opt in opts {
+                            if pkgs.contains(&opt) {
                                 continue;
                             }
 
                             info!(log, "optional package: {} -> {}", pkg, opt);
-                            pkgs.push(opt.to_string());
+                            pkgs.push(opt);
                         }
                     }
 
@@ -2483,7 +2609,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                         let pkgs: Vec<_> = pkgs.iter().map(|s| s.as_str())
                             .collect();
                         pkg_install(log,
-                            &mp.to_str().unwrap(),
+                            mp.to_str().unwrap(),
                             pkgs.as_slice())?;
                     }
                 }
@@ -2498,7 +2624,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: PkgSetPropertyArgs = step.args()?;
                 let mp = ib.root()?;
 
-                pkg(log, &["-R", &mp.to_str().unwrap(), "set-property",
+                pkg(log, &["-R", mp.to_str().unwrap(), "set-property",
                     &a.name,
                     &a.value,
                 ])?;
@@ -2587,7 +2713,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let cacert = ib.template_file(&a.certfile)?
                     .to_str().unwrap().to_string();
 
-                pkg(log, &["-R", &mp.to_str().unwrap(), "set-publisher",
+                pkg(log, &["-R", mp.to_str().unwrap(), "set-publisher",
                     &format!("--approve-ca-cert={}", &cacert),
                     &a.publisher,
                 ])?;
@@ -2601,7 +2727,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: PkgUninstallArgs = step.args()?;
                 let mp = ib.root()?;
                 let pkgs: Vec<_> = a.pkgs.iter().map(|s| s.as_str()).collect();
-                pkg_uninstall(log, &mp.to_str().unwrap(), pkgs.as_slice())?;
+                pkg_uninstall(log, mp.to_str().unwrap(), pkgs.as_slice())?;
             }
             "pkg_change_variant" => {
                 #[derive(Deserialize)]
@@ -2612,7 +2738,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 let a: PkgChangeVariantArgs = step.args()?;
                 let mp = ib.root()?;
-                pkg_ensure_variant(log, &mp.to_str().unwrap(),
+                pkg_ensure_variant(log, mp.to_str().unwrap(),
                     &a.variant, &a.value)?;
             }
             "pkg_change_facet" => {
@@ -2624,12 +2750,12 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 let a: PkgChangeFacetArgs = step.args()?;
                 let mp = ib.root()?;
-                pkg_ensure_facet(log, &mp.to_str().unwrap(),
+                pkg_ensure_facet(log, mp.to_str().unwrap(),
                     &a.facet, &a.value)?;
             }
             "pkg_purge_history" => {
                 let mp = ib.root()?;
-                pkg(log, &["-R", &mp.to_str().unwrap(), "purge-history"])?;
+                pkg(log, &["-R", mp.to_str().unwrap(), "purge-history"])?;
             }
             "seed_smf" => {
                 #[derive(Deserialize)]
