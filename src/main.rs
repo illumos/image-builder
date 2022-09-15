@@ -598,7 +598,11 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
     let lofi = recreate_lofi(log, &imagefile, pool.size(), true)?;
     let ldev = lofi.devpath.as_ref().unwrap();
 
-    let disk = ldev.to_str().unwrap().trim_end_matches("p0");
+    let disk = if pool.label() {
+        ldev.to_str().unwrap().trim_end_matches("p0")
+    } else {
+        ldev.to_str().unwrap()
+    };
     info!(log, "pool device = {}", disk);
 
     /*
@@ -666,7 +670,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
      */
     pool_export(&ib.log, &temppool)?;
 
-    if ib.template.pool.as_ref().unwrap().partition_only.unwrap_or(false) {
+    if ib.template.pool.as_ref().unwrap().partition_only() {
         let outpartfile = ib.output_file(&format!("{}-{}.partonly", ib.group,
             ib.output_name))?;
         ensure::removed(&ib.log, &outpartfile)?;
@@ -683,7 +687,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
             "dd",
             &format!("if={}s{}", disk.replace("dsk", "rdsk"), slice),
             &format!("of={}", outpartfile.to_str().unwrap()),
-            "bs=256k",
+            "bs=1k",
         ])?;
     }
 
@@ -1806,6 +1810,7 @@ struct Pool {
     partition_only: Option<bool>,
     no_features: Option<bool>,
     compression: Option<String>,
+    label: Option<bool>,
 }
 
 impl Pool {
@@ -1831,8 +1836,23 @@ impl Pool {
         self.size
     }
 
+    fn partition_only(&self) -> bool {
+        if !self.label() {
+            /*
+             * There are no partitions if we do not use a labelled lofi device.
+             */
+            false
+        } else {
+            self.partition_only.unwrap_or(false)
+        }
+    }
+
     fn no_features(&self) -> bool {
         self.no_features.unwrap_or(true)
+    }
+
+    fn label(&self) -> bool {
+        self.label.unwrap_or(true)
     }
 
     fn compression(&self) -> &str {
