@@ -610,10 +610,11 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
      * correct both on this system and on the target system when it is
      * eventually imported as its target name.
      */
+    let compression = format!("compression={}", pool.compression());
     let mut args = vec![
         "/sbin/zpool", "create",
         "-t", &temppool,
-        "-O", "compression=on",
+        "-O", &compression,
         "-R", altroot.to_str().unwrap(),
     ];
 
@@ -1804,6 +1805,7 @@ struct Pool {
     size: usize,
     partition_only: Option<bool>,
     no_features: Option<bool>,
+    compression: Option<String>,
 }
 
 impl Pool {
@@ -1831,6 +1833,10 @@ impl Pool {
 
     fn no_features(&self) -> bool {
         self.no_features.unwrap_or(true)
+    }
+
+    fn compression(&self) -> &str {
+        self.compression.as_deref().unwrap_or("on")
     }
 }
 
