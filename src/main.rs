@@ -841,7 +841,8 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
      *
      * Ideally, this will go away with changes to illumos.
      */
-    let bename = Uuid::new_v4().to_hyphenated().to_string()[0..8].to_string();
+    let mut bename = Uuid::new_v4().to_hyphenated().to_string()[0..8]
+        .to_string();
 
     let c = t.ufs.is_some() as u32
         + t.pcfs.is_some() as u32
@@ -879,6 +880,9 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         zfs_set(log, &workds, "sync", "disabled")?;
 
         let (build_type, func) = if let Some(pool) = &t.pool {
+            if let Some(n) = pool.bename() {
+                bename = n.to_string();
+            }
             (BuildType::Pool(pool.name().to_string()), run_build_pool as Build)
         } else if t.ufs.is_some() {
             (BuildType::Ufs, run_build_fs as Build)
@@ -1804,6 +1808,7 @@ struct Pcfs {
 #[derive(Deserialize, Debug, Clone)]
 struct Pool {
     name: String,
+    bename: Option<String>,
     ashift: Option<u8>,
     uefi: Option<bool>,
     size: usize,
@@ -1823,6 +1828,10 @@ impl Pool {
          * Default to no EFI System Partition (zpool create -B).
          */
         self.uefi.unwrap_or(false)
+    }
+
+    fn bename(&self) -> Option<&str> {
+        self.bename.as_deref()
     }
 
     fn ashift(&self) -> u8 {
