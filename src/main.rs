@@ -643,6 +643,11 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
     let ashiftarg = format!("ashift={}", pool.ashift());
     args.push(&ashiftarg);
 
+    if pool.autoexpand() {
+        args.push("-o");
+        args.push("autoexpand=on");
+    }
+
     let targpool = ib.target_pool();
     args.push(&targpool);
     args.push(disk);
@@ -1816,6 +1821,7 @@ struct Pool {
     no_features: Option<bool>,
     compression: Option<String>,
     label: Option<bool>,
+    autoexpand: Option<bool>,
 }
 
 impl Pool {
@@ -1866,6 +1872,10 @@ impl Pool {
 
     fn compression(&self) -> &str {
         self.compression.as_deref().unwrap_or("on")
+    }
+
+    fn autoexpand(&self) -> bool {
+        self.autoexpand.unwrap_or(false)
     }
 }
 
