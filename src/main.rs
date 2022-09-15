@@ -612,11 +612,18 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
      */
     let mut args = vec![
         "/sbin/zpool", "create",
-        "-d",
         "-t", &temppool,
         "-O", "compression=on",
         "-R", altroot.to_str().unwrap(),
     ];
+
+    if pool.no_features() {
+        /*
+         * Create the pool without any enabled features.  This means it will be
+         * compatible with the widest variety of OS versions.
+         */
+        args.push("-d");
+    }
 
     if pool.uefi() {
         /*
@@ -1796,6 +1803,7 @@ struct Pool {
     uefi: Option<bool>,
     size: usize,
     partition_only: Option<bool>,
+    no_features: Option<bool>,
 }
 
 impl Pool {
@@ -1819,6 +1827,10 @@ impl Pool {
 
     fn size(&self) -> usize {
         self.size
+    }
+
+    fn no_features(&self) -> bool {
+        self.no_features.unwrap_or(true)
     }
 }
 
