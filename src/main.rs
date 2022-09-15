@@ -2307,18 +2307,20 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: DigestArgs = step.args()?;
                 let owner = translate_uid(&a.owner)?;
                 let group = translate_gid(&a.group)?;
+                let target = ib.expand(&a.target)?;
+                let src = ib.expand(&a.src)?;
 
-                if !a.target.starts_with('/') {
+                if !target.starts_with('/') {
                     bail!("target must be fully qualified path");
                 }
-                let target = format!("{}{}", targmp, a.target);
+                let target = format!("{}{}", targmp, target);
 
                 let mode = u32::from_str_radix(&a.mode, 8)?;
 
-                if a.src.starts_with('/') {
+                if src.starts_with('/') {
                     bail!("source file must be a relative path");
                 }
-                let src = ib.output_file(&a.src)?;
+                let src = ib.output_file(&src)?;
 
                 gzip(log, &src, &target)?;
                 ensure::perms(log, &target, owner, group, mode)?;
@@ -2340,6 +2342,8 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: DigestArgs = step.args()?;
                 let owner = translate_uid(&a.owner)?;
                 let group = translate_gid(&a.group)?;
+                let target = ib.expand(&a.target)?;
+                let src = ib.expand(&a.src)?;
 
                 let ht = match a.algorithm.as_str() {
                     "sha1" => HashType::SHA1,
@@ -2347,17 +2351,17 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     x => bail!("unknown digest algorithm {}", x),
                 };
 
-                if !a.target.starts_with('/') {
+                if !target.starts_with('/') {
                     bail!("target must be fully qualified path");
                 }
-                let target = format!("{}{}", targmp, a.target);
+                let target = format!("{}{}", targmp, target);
 
                 let mode = u32::from_str_radix(&a.mode, 8)?;
 
-                if a.src.starts_with('/') {
+                if src.starts_with('/') {
                     bail!("source file must be a relative path");
                 }
-                let src = ib.output_file(&a.src)?;
+                let src = ib.output_file(&src)?;
 
                 let mut hash = ensure::hash_file(&src, &ht)?;
                 hash += "\n";
@@ -2458,15 +2462,20 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: FileArgs = step.args()?;
                 let owner = translate_uid(&a.owner)?;
                 let group = translate_gid(&a.group)?;
+                let src = ib.expando(a.src.as_deref())?;
+                let imagesrc = ib.expando(a.imagesrc.as_deref())?;
+                let tarsrc = ib.expando(a.tarsrc.as_deref())?;
+                let outputsrc = ib.expando(a.outputsrc.as_deref())?;
+                let file = ib.expand(&a.file)?;
 
-                if !a.file.starts_with('/') {
+                if !file.starts_with('/') {
                     bail!("file must be fully qualified path");
                 }
-                let file = format!("{}{}", targmp, a.file);
+                let file = format!("{}{}", targmp, file);
 
                 let mode = u32::from_str_radix(&a.mode, 8)?;
 
-                if let Some(src) = &a.src {
+                if let Some(src) = &src {
                     /*
                      * "src" specifies a source file from within the template
                      * directory structure, whether at the top level or at the
@@ -2478,7 +2487,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     let src = ib.template_file(src)?;
                     ensure::file(log, &src, &file, owner, group,
                         mode, Create::Always)?;
-                } else if let Some(outputsrc) = &a.outputsrc {
+                } else if let Some(outputsrc) = &outputsrc {
                     /*
                      * "outputsrc" specifies a source file from within the
                      * output area.  Useful for including the output of a
@@ -2491,7 +2500,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     let src = ib.output_file(outputsrc)?;
                     ensure::file(log, &src, &file, owner, group,
                         mode, Create::Always)?;
-                } else if let Some(imagesrc) = &a.imagesrc {
+                } else if let Some(imagesrc) = &imagesrc {
                     /*
                      * "imagesrc" specifies a source file that already exists
                      * within the image.  Can be used to make a copy of an
@@ -2503,7 +2512,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     let src = format!("{}{}", targmp, imagesrc);
                     ensure::file(log, &src, &file, owner, group,
                         mode, Create::Always)?;
-                } else if let Some(tarsrc) = &a.tarsrc {
+                } else if let Some(tarsrc) = &tarsrc {
                     /*
                      * "tarsrc" specifies a file in the temporary directory
                      * created by the last "unpack_tar" action that used
