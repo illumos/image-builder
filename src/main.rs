@@ -813,7 +813,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     let svccfg = mat.opt_str("S")
         .unwrap_or_else(|| "/usr/sbin/svccfg".to_string());
 
-    let t = load_template(&template_root, &group, &name, false)
+    let t = load_template(log, &template_root, &group, &name, false, &features)
         .context(format!("loading template {}:{}", group, name))?;
 
     if !dataset_exists(&ibrootds)? {
@@ -1945,7 +1945,8 @@ fn include_path<P: AsRef<Path>>(root: P, group: &str, name: &str)
     bail!("could not find include file in: {:?}", paths);
 }
 
-fn load_template<P>(root: P, group: &str, name: &str, include: bool)
+fn load_template<P>(log: &Logger, root: P, group: &str, name: &str,
+    include: bool, features: &HashMap<String, String>)
     -> Result<Template>
     where P: AsRef<Path>
 {
@@ -1983,7 +1984,27 @@ fn load_template<P>(root: P, group: &str, name: &str, include: bool)
 
             let a: IncludeArgs = step.args()?;
 
-            let ti = load_template(root.as_ref(), group, &a.name, true)?;
+            /*
+             * If this include is dependent on being with or without a
+             * particular feature, check for the present of that feature:
+             */
+            if let Some(feature) = step.with.as_deref() {
+                if !features.contains_key(feature) {
+                    info!(log, "skip include {:?} because feature {:?} is \
+                        not enabled", a.name, feature);
+                    continue;
+                }
+            }
+            if let Some(feature) = step.without.as_deref() {
+                if features.contains_key(feature) {
+                    info!(log, "skip include {:?} because feature {:?} is \
+                        enabled", a.name, feature);
+                    continue;
+                }
+            }
+
+            let ti = load_template(log, root.as_ref(), group, &a.name, true,
+                features)?;
             for step in ti.steps {
                 steps.push(step);
             }
