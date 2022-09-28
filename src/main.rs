@@ -2633,15 +2633,29 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
             "pkg_image_create" => {
                 #[derive(Deserialize)]
                 struct PkgImageCreateArgs {
-                    publisher: String,
-                    uri: String,
+                    publisher: Option<String>,
+                    uri: Option<String>,
                 }
 
                 let a: PkgImageCreateArgs = step.args()?;
+                let publisher = ib.expando(a.publisher.as_deref())?;
+                let uri = ib.expando(a.uri.as_deref())?;
                 let mp = ib.root()?;
-                pkg(log, &["image-create", "--full",
-                    "--publisher", &format!("{}={}", a.publisher, a.uri),
-                    mp.to_str().unwrap()])?;
+
+                if publisher.is_some() != uri.is_some() {
+                    bail!("publisher and uri must be specified together");
+                }
+
+                let mut args = vec!["image-create", "--full"];
+                let pubarg;
+                if publisher.is_some() {
+                    pubarg = format!("{}={}", publisher.unwrap(), uri.unwrap());
+                    args.push("--publisher");
+                    args.push(&pubarg);
+                }
+                args.push(mp.to_str().unwrap());
+
+                pkg(log, &args)?;
             }
             "pkg_install" => {
                 #[derive(Deserialize)]
@@ -2725,11 +2739,13 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 let a: PkgSetPublisherArgs = step.args()?;
                 let mp = ib.root()?;
+                let publisher = ib.expand(&a.publisher)?;
+                let uri = ib.expand(&a.uri)?;
 
                 pkg(log, &["-R", mp.to_str().unwrap(), "set-publisher",
                     "--no-refresh",
-                    "-O", &a.uri,
-                    &a.publisher,
+                    "-O", &uri,
+                    &publisher,
                 ])?;
             }
             "pkg_approve_ca_cert" => {
