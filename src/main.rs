@@ -83,6 +83,8 @@ fn main() -> Result<()> {
             opts.optopt("S", "svccfg", "svccfg-native location", "SVCCFG");
             opts.optmulti("F", "feature", "add or remove a feature definition",
                 "[^]FEATURE[=VALUE]");
+            opts.optmulti("E", "external-src", "external file src tree",
+                "DIR");
 
             run_build
         }
@@ -751,6 +753,15 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     let fullreset = mat.opt_present("x");
     let reset = mat.opt_present("r");
     let template_root = find_template_root(mat.opt_str("T"))?;
+    let external_src = mat.opt_strs("E")
+        .iter()
+        .map(|e| {
+            let ee = PathBuf::from(e);
+            if !ee.is_dir() {
+                bail!("external file source {:?} should be a directory", e);
+            }
+            Ok(ee)
+        }).collect::<Result<Vec<PathBuf>>>()?;
 
     /*
      * Process feature directives in the order in which they appear.  Directives
@@ -912,6 +923,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
             tmpds,
             svccfg,
             features,
+            external_src,
             log: log.clone(),
         };
 
@@ -948,6 +960,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
         tmpds,
         svccfg,
         features,
+        external_src,
         log: log.clone(),
     };
 
@@ -1661,6 +1674,7 @@ struct ImageBuilder {
     svccfg: String,
 
     features: HashMap<String, String>,
+    external_src: Vec<PathBuf>,
 }
 
 impl ImageBuilder {
@@ -1735,6 +1749,22 @@ impl ImageBuilder {
         let mut p = PathBuf::from(zfs_get(&self.outputds, "mountpoint")?);
         p.push(n);
         Ok(p)
+    }
+
+    fn external_src_file(&self, filename: &str) -> Result<PathBuf> {
+        for dir in self.external_src.iter() {
+            let mut s = dir.clone();
+            s.push(filename);
+            if let Some(fi) = ensure::check(&s)? {
+                if !fi.is_file() {
+                    bail!("template file {} is wrong type: {:?}", s.display(),
+                        fi.filetype);
+                }
+                return Ok(s);
+            }
+        }
+
+        bail!("could not find external source file \"{}\"", filename);
     }
 
     fn template_file(&self, filename: &str) -> Result<PathBuf> {
@@ -2530,6 +2560,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     imagesrc: Option<String>,
                     tarsrc: Option<String>,
                     outputsrc: Option<String>,
+                    extsrc: Option<String>,
                     contents: Option<String>,
                     file: String,
                     owner: String,
@@ -2544,6 +2575,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let imagesrc = ib.expando(a.imagesrc.as_deref())?;
                 let tarsrc = ib.expando(a.tarsrc.as_deref())?;
                 let outputsrc = ib.expando(a.outputsrc.as_deref())?;
+                let extsrc = ib.expando(a.extsrc.as_deref())?;
                 let file = ib.expand(&a.file)?;
 
                 if !file.starts_with('/') {
@@ -2563,6 +2595,18 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                         bail!("source file must be a relative path");
                     }
                     let src = ib.template_file(src)?;
+                    ensure::file(log, &src, &file, owner, group,
+                        mode, Create::Always)?;
+                } else if let Some(extsrc) = &extsrc {
+                    /*
+                     * "extsrc" specifies a source file that comes from one or
+                     * more proto area-like trees of files passed in via the -E
+                     * option.
+                     */
+                    if extsrc.starts_with('/') {
+                        bail!("external source file must be a relative path");
+                    }
+                    let src = ib.external_src_file(extsrc)?;
                     ensure::file(log, &src, &file, owner, group,
                         mode, Create::Always)?;
                 } else if let Some(outputsrc) = &outputsrc {
