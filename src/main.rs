@@ -1521,7 +1521,7 @@ fn pkg_ensure_facet(log: &Logger, root: &str, facet: &str, value: &str)
 }
 
 fn seed_smf(log: &Logger, svccfg: &str, tmpdir: &Path, mountpoint: &Path,
-    debug: bool, apply_site: bool) -> Result<()>
+    debug: bool, apply_site: bool, seed: Option<&str>) -> Result<()>
 {
     let tmpdir = tmpdir.to_str().unwrap();
     let mountpoint = mountpoint.to_str().unwrap();
@@ -1529,11 +1529,15 @@ fn seed_smf(log: &Logger, svccfg: &str, tmpdir: &Path, mountpoint: &Path,
     let dtd = format!("{}/usr/share/lib/xml/dtd/service_bundle.dtd.1",
         mountpoint);
     let repo = format!("{}/repo.db", tmpdir);
-    let seed = format!("{}/lib/svc/seed/{}.db", mountpoint, "global");
     let manifests = format!("{}/lib/svc/manifest", mountpoint);
     let installto = format!("{}/etc/svc/repository.db", mountpoint);
 
-    ensure::file(log, &seed, &repo, ROOT, ROOT, 0o600, Create::Always)?;
+    if let Some(p) = seed {
+        let seeddb = format!("{}/lib/svc/seed/{}.db", mountpoint, p);
+        ensure::file(log, &seeddb, &repo, ROOT, ROOT, 0o600, Create::Always)?;
+    } else {
+        ensure::removed(log, &repo)?;
+    }
 
     let mut env = HashMap::new();
     env.insert("SVCCFG_DTD".to_string(), dtd);
@@ -2860,14 +2864,20 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 struct SeedSmfArgs {
                     debug: Option<bool>,
                     apply_site: Option<bool>,
+                    seed: Option<String>,
+                    skip_seed: Option<bool>,
                 }
 
                 let a: SeedSmfArgs = step.args()?;
                 let debug = a.debug.unwrap_or(false);
                 let apply_site = a.apply_site.unwrap_or(false);
+                let seed = match a.skip_seed.unwrap_or(false) {
+                    true => None,
+                    false => Some(a.seed.as_deref().unwrap_or("global")),
+                };
 
                 seed_smf(log, &ib.svccfg, &ib.tmpdir()?, &ib.root()?, debug,
-                    apply_site)?;
+                    apply_site, seed)?;
             }
             x => {
                 bail!("INVALID STEP TYPE: {}", x);
