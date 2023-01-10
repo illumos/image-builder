@@ -1386,10 +1386,14 @@ fn pkg(log: &Logger, args: &[&str]) -> Result<()> {
     ensure::run(log, &newargs)
 }
 
-fn pkg_install(log: &Logger, root: &str, packages: &[&str]) -> Result<()> {
+fn pkg_install(
+    log: &Logger,
+    root: &str,
+    packages: &[impl AsRef<str>]
+) -> Result<()> {
     let mut newargs = vec!["/usr/bin/pkg", "-R", root, "install"];
     for pkg in packages {
-        newargs.push(pkg);
+        newargs.push(pkg.as_ref());
     }
 
     ensure::run(log, &newargs)
@@ -2713,8 +2717,13 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: PkgInstallArgs = step.args()?;
                 let mp = ib.root()?;
 
-                let pkgs: Vec<_> = a.pkgs.iter().map(|s| s.as_str()).collect();
-                pkg_install(log, mp.to_str().unwrap(), pkgs.as_slice())?;
+                let pkgs_expanded = a
+                    .pkgs
+                    .iter()
+                    .map(|s| ib.expand(&s))
+                    .collect::<Result<Vec<_>>>()?;
+
+                pkg_install(log, mp.to_str().unwrap(), &pkgs_expanded)?;
 
                 if a.include_optional {
                     let mut pkgs = Vec::new();
@@ -2734,7 +2743,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                      * "opensolaris.zone" variant here; for now we assume we are
                      * in the global zone and all packages are OK.
                      */
-                    for pkg in a.pkgs.iter() {
+                    for pkg in pkgs_expanded {
                         let opts = pkg_optional_deps(log,
                             mp.to_str().unwrap(),
                             pkg.as_str(),
