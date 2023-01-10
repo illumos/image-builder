@@ -2717,12 +2717,13 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: PkgInstallArgs = step.args()?;
                 let mp = ib.root()?;
 
-                let pkgs = a
+                let pkgs_expanded = a
                     .pkgs
                     .iter()
                     .map(|s| ib.expand(&s))
                     .collect::<Result<Vec<_>>>()?;
-                pkg_install(log, mp.to_str().unwrap(), pkgs.as_slice())?;
+
+                pkg_install(log, mp.to_str().unwrap(), &pkgs_expanded)?;
 
                 if a.include_optional {
                     let mut pkgs = Vec::new();
@@ -2742,7 +2743,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                      * "opensolaris.zone" variant here; for now we assume we are
                      * in the global zone and all packages are OK.
                      */
-                    for pkg in a.pkgs.iter() {
+                    for pkg in pkgs_expanded {
                         let opts = pkg_optional_deps(log,
                             mp.to_str().unwrap(),
                             pkg.as_str(),
