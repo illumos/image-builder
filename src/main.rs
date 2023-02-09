@@ -2221,9 +2221,10 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 /*
                  * Unpack a tar file of an image created by another build:
                  */
+                let zflag = if name.ends_with("gz") { "z" } else { "" };
                 let tarf = ib.output_file(&name)?;
                 ensure::run(log,
-                    &["/usr/sbin/tar", "xzeEp@/f",
+                    &["/usr/sbin/tar", &format!("x{zflag}eEp@/f"),
                         tarf.to_str().unwrap(),
                         "-C", &targdir])?;
             }
@@ -2245,7 +2246,9 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let tarf = ib.output_file(&name)?;
                 ensure::removed(log, &tarf)?;
 
-                let mut args = vec!["/usr/sbin/tar", "czeEp@/f",
+                let zflag = if name.ends_with("gz") { "z" } else { "" };
+                let flags = format!("c{zflag}eEp@/f");
+                let mut args = vec!["/usr/sbin/tar", &flags,
                     tarf.to_str().unwrap()];
                 if let Some(include) = &a.include {
                     include.iter().for_each(|s| {
