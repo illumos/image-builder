@@ -1759,6 +1759,26 @@ impl ImageBuilder {
         Ok(p)
     }
 
+    // Searches for a directory named "dirname" which exists in one
+    // of the "external_src" paths.
+    //
+    // Returns the first directory in which "$(external_src)/dirname"
+    // exists.
+    fn external_src_dir(&self, dirname: &str) -> Result<PathBuf> {
+        for dir in self.external_src.iter() {
+            let mut s = dir.clone();
+            s.push(dirname);
+            if let Some(fi) = ensure::check(&s)? {
+                if !fi.is_dir() {
+                    bail!("template file {} is wrong type: {:?}", s.display(),
+                        fi.filetype);
+                }
+                return Ok(s);
+            }
+        }
+        bail!("could not find external source directory \"{}\"", dirname);
+    }
+
     fn external_src_file(&self, filename: &str) -> Result<PathBuf> {
         for dir in self.external_src.iter() {
             let mut s = dir.clone();
@@ -2542,24 +2562,55 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 #[derive(Deserialize)]
                 struct DirArgs {
+                    // The name and metadata of the directrory to be created.
                     dir: String,
                     owner: String,
                     group: String,
                     mode: String,
+
+                    // An optional source file of the directory, if contents are
+                    // to be copied, rather than simply creating the directory.
+                    extsrc: Option<String>
                 }
 
                 let a: DirArgs = step.args()?;
                 let owner = translate_uid(&a.owner)?;
                 let group = translate_gid(&a.group)?;
+                let extsrc = ib.expando(a.extsrc.as_deref())?;
 
                 if !a.dir.starts_with('/') {
                     bail!("dir must be fully qualified path");
                 }
-                let dir = format!("{}{}", targmp, a.dir);
+                let dst = format!("{}{}", targmp, a.dir);
 
                 let mode = u32::from_str_radix(&a.mode, 8)?;
 
-                ensure::directory(log, &dir, owner, group, mode)?;
+                ensure::directory(log, &dst, owner, group, mode)?;
+
+                if let Some(extsrc) = &extsrc {
+                    if extsrc.starts_with('/') {
+                        bail!("external source directory must be a relative path");
+                    }
+                    let dst = PathBuf::from(dst);
+
+                    // "src" is the absolute path to a directory to be copied.
+                    let src = ib.external_src_dir(extsrc)?;
+
+                    for entry in walkdir::WalkDir::new(&src) {
+                        let entry = entry?;
+                        let from = entry.path();
+                        let to = dst.join(from.strip_prefix(&src)?);
+                        if entry.file_type().is_dir() {
+                            if let Err(e) = std::fs::create_dir(to) {
+                                if !matches!(e.kind(), std::io::ErrorKind::AlreadyExists) {
+                                    return Err(e.into());
+                                }
+                            }
+                        } else if entry.file_type().is_file() {
+                            std::fs::copy(from, to)?;
+                        }
+                    }
+                }
             }
             "ensure_file" => {
                 let mp = ib.root()?;
