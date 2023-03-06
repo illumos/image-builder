@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 Oxide Computer Company
+ * Copyright 2023 Oxide Computer Company
  */
 
 use std::process::{Command, Stdio, exit};
@@ -768,21 +768,21 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
      * can override the value of previous definitions, and can remove a feature
      * already defined, to hopefully easily enable argument lists to be
      * constructed in control programs that override default values.
-     *
      */
-    let mut feature_directives = mat.opt_strs("F")
+    let mut features = Features::default();
+    mat.opt_strs("F")
         .iter()
         .map(|o| {
             let o = o.trim();
 
             Ok(if o.is_empty() {
-                bail!("-f requires an argument");
+                bail!("-F requires an argument");
             } else if o.starts_with('^') {
                 /*
                  * This is a negated feature; i.e., -F ^BLAH
                  */
                 if o.contains('=') {
-                    bail!("-f with a negated feature cannot have a value");
+                    bail!("-F with a negated feature cannot have a value");
                 }
                 (o.chars().skip(1).collect::<String>(), None)
             } else if let Some((f, v)) = o.split_once('=') {
@@ -797,15 +797,15 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
                  */
                 (o.to_string(), Some("1".to_string()))
             })
-        }).collect::<Result<Vec<_>>>()?;
-    let mut features = HashMap::new();
-    for (f, v) in feature_directives.drain(..) {
-        if let Some(v) = v {
-            features.insert(f, v);
-        } else {
-            features.remove(&f);
-        }
-    }
+        }).collect::<Result<Vec<_>>>()?
+        .iter()
+        .for_each(|(f, v)| {
+            if let Some(v) = v {
+                features.set(f, v);
+            } else {
+                features.clear(f);
+            }
+        });
 
     /*
      * Using the system svccfg(1M) is acceptable under some conditions, but not
@@ -824,7 +824,8 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     let svccfg = mat.opt_str("S")
         .unwrap_or_else(|| "/usr/sbin/svccfg".to_string());
 
-    let t = load_template(log, &template_root, &group, &name, false, &features)
+    let t = load_template(log, &template_root, &group,
+        Load::Main(group.to_string(), name.to_string()), &features)
         .context(format!("loading template {}:{}", group, name))?;
 
     if !dataset_exists(&ibrootds)? {
@@ -942,7 +943,7 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
     }
 
     let dataset = t.dataset.as_ref().unwrap();
-    let dataset_name = Expansion::parse(&dataset.name)?.evaluate(&features)?;
+    let dataset_name = features.expand(&dataset.name)?;
 
     let workds = format!("{}/work/{}/{}", ibrootds, group, dataset_name);
     info!(log, "work dataset: {}", workds);
@@ -1664,6 +1665,36 @@ enum BuildType {
     Pcfs,
 }
 
+#[derive(Default)]
+struct Features {
+    features: HashMap<String, String>,
+}
+
+impl Features {
+    fn set<N: AsRef<str>, V: AsRef<str>>(&mut self, name: N, value: V) {
+        let name = name.as_ref().to_string();
+        let value = value.as_ref().to_string();
+
+        self.features.insert(name, value);
+    }
+
+    fn clear<N: AsRef<str>>(&mut self, name: N) {
+        self.features.remove(name.as_ref());
+    }
+
+    fn with<N: AsRef<str>>(&self, name: N) -> bool {
+        self.features.contains_key(name.as_ref())
+    }
+
+    fn expando(&self, value: Option<&str>) -> Result<Option<String>> {
+        value.map(|value| self.expand(value)).transpose()
+    }
+
+    fn expand(&self, value: &str) -> Result<String> {
+        Ok(Expansion::parse(value)?.evaluate(&self.features)?)
+    }
+}
+
 struct ImageBuilder {
     build_type: BuildType,
 
@@ -1681,7 +1712,7 @@ struct ImageBuilder {
 
     svccfg: String,
 
-    features: HashMap<String, String>,
+    features: Features,
     external_src: Vec<PathBuf>,
 }
 
@@ -1810,15 +1841,15 @@ impl ImageBuilder {
     }
 
     fn feature_enabled(&self, name: &str) -> bool {
-        self.features.contains_key(&name.to_string())
+        self.features.with(name)
     }
 
     fn expando(&self, value: Option<&str>) -> Result<Option<String>> {
-        value.map(|value| self.expand(value)).transpose()
+        self.features.expando(value)
     }
 
     fn expand(&self, value: &str) -> Result<String> {
-        Ok(Expansion::parse(value)?.evaluate(&self.features)?)
+        self.features.expand(value)
     }
 }
 
@@ -1983,22 +2014,44 @@ fn include_path<P: AsRef<Path>>(root: P, group: &str, name: &str)
     bail!("could not find include file in: {:?}", paths);
 }
 
-fn load_template<P>(log: &Logger, root: P, group: &str, name: &str,
-    include: bool, features: &HashMap<String, String>)
+enum Load {
+    Main(String, String),
+    Include(String, String),
+    IncludeExplicit(PathBuf),
+}
+
+impl Load {
+    fn is_include(&self) -> bool {
+        match self {
+            Load::Include(_, _) | Load::IncludeExplicit(_) => true,
+            Load::Main(_, _) => false,
+        }
+    }
+}
+
+fn load_template<P>(log: &Logger, root: P, group: &str, load: Load,
+    features: &Features)
     -> Result<Template>
-    where P: AsRef<Path>
+    where P: AsRef<Path>,
 {
-    let path = if include {
-        include_path(root.as_ref(), group, name)?
-    } else {
-        let mut path = root.as_ref().to_path_buf();
-        path.push(format!("{}/{}.json", group, name));
-        path
+    let path = match &load {
+        Load::Include(group, name) => {
+            include_path(root.as_ref(), group, name)?
+        }
+        Load::Main(group, name) => {
+            let mut path = root.as_ref().to_path_buf();
+            path.push(format!("{}/{}.json", group, name));
+            path
+        }
+        Load::IncludeExplicit(path) => {
+            path.to_path_buf()
+        }
     };
+
     let f = std::fs::File::open(&path)
         .with_context(|| anyhow!("template load path: {:?}", &path))?;
     let mut t: Template = serde_json::from_reader(f)?;
-    if include {
+    if load.is_include() {
         if t.pool.is_some() || t.dataset.is_some() {
             bail!("cannot specify \"pool\" or \"dataset\" in an include");
         }
@@ -2018,31 +2071,40 @@ fn load_template<P>(log: &Logger, root: P, group: &str, name: &str,
             #[derive(Deserialize)]
             struct IncludeArgs {
                 name: String,
+                file: Option<String>,
             }
 
             let a: IncludeArgs = step.args()?;
+            let file = features.expando(a.file.as_deref())?;
+            let load = if let Some(file) = file.as_deref() {
+                if !file.starts_with('/') {
+                    bail!("file must be fully qualified path");
+                }
+                Load::IncludeExplicit(PathBuf::from(file))
+            } else {
+                Load::Include(group.to_string(), a.name.to_string())
+            };
 
             /*
              * If this include is dependent on being with or without a
              * particular feature, check for the present of that feature:
              */
             if let Some(feature) = step.with.as_deref() {
-                if !features.contains_key(feature) {
+                if !features.with(feature) {
                     info!(log, "skip include {:?} because feature {:?} is \
                         not enabled", a.name, feature);
                     continue;
                 }
             }
             if let Some(feature) = step.without.as_deref() {
-                if features.contains_key(feature) {
+                if features.with(feature) {
                     info!(log, "skip include {:?} because feature {:?} is \
                         enabled", a.name, feature);
                     continue;
                 }
             }
 
-            let ti = load_template(log, root.as_ref(), group, &a.name, true,
-                features)?;
+            let ti = load_template(log, root.as_ref(), group, load, features)?;
             for step in ti.steps {
                 steps.push(step);
             }
