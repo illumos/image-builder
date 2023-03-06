@@ -2075,15 +2075,6 @@ fn load_template<P>(log: &Logger, root: P, group: &str, load: Load,
             }
 
             let a: IncludeArgs = step.args()?;
-            let file = features.expando(a.file.as_deref())?;
-            let load = if let Some(file) = file.as_deref() {
-                if !file.starts_with('/') {
-                    bail!("file must be fully qualified path");
-                }
-                Load::IncludeExplicit(PathBuf::from(file))
-            } else {
-                Load::Include(group.to_string(), a.name.to_string())
-            };
 
             /*
              * If this include is dependent on being with or without a
@@ -2103,6 +2094,22 @@ fn load_template<P>(log: &Logger, root: P, group: &str, load: Load,
                     continue;
                 }
             }
+
+            /*
+             * Expand any feature macros that appear in the explicit include
+             * file path if one was provided.  Care is taken to perform this
+             * expansion after any feature guarding ("with") above, in case the
+             * expansion would then use an undefined feature by mistake.
+             */
+            let file = features.expando(a.file.as_deref())?;
+            let load = if let Some(file) = file.as_deref() {
+                if !file.starts_with('/') {
+                    bail!("file must be fully qualified path");
+                }
+                Load::IncludeExplicit(PathBuf::from(file))
+            } else {
+                Load::Include(group.to_string(), a.name.to_string())
+            };
 
             let ti = load_template(log, root.as_ref(), group, load, features)?;
             for step in ti.steps {
