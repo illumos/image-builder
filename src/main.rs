@@ -1153,8 +1153,8 @@ fn zpool_trim(log: &Logger, pool: &str) -> Result<()> {
                 .filter(|x| x.contains("trimmed, started"))
                 .map(|x| {
                     let s = x.find("(").unwrap_or(0);
-                    let e = x.find(")").unwrap_or(x.len());
-                    &x[s..e]
+                    let e = x.rfind(")").unwrap_or(x.len());
+                    &x[s..e+1]
                 })
                 .collect();
 
@@ -1162,7 +1162,7 @@ fn zpool_trim(log: &Logger, pool: &str) -> Result<()> {
                 break;
             }
 
-            info!(log, "trim {}: {})", pool, status.first().unwrap());
+            info!(log, "trim {}: {}", pool, status.first().unwrap());
 
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
