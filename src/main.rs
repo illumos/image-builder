@@ -607,6 +607,8 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
     };
     info!(log, "pool device = {}", disk);
 
+    let trimpool = pool.trim();
+
     /*
      * Create the new pool, using the temporary pool name while it is imported
      * on this system.  We specify an altroot to avoid using the system cache
@@ -662,6 +664,14 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
     run_steps(ib)?;
 
     info!(ib.log, "steps complete; finalising image!");
+
+    /*
+     * If requested, trim the pool to remove unnecessary bytes and make it more
+     * amenable to compression.
+     */
+    if trimpool {
+        zpool_trim(&ib.log, &temppool)?;
+    }
 
     /*
      * Report the used and available space in the temporary pool before we
@@ -1095,6 +1105,72 @@ fn zpool_set(log: &Logger, pool: &str, n: &str, v: &str) -> Result<()> {
     Ok(())
 }
 
+fn zpool_trim(log: &Logger, pool: &str) -> Result<()> {
+    if pool.contains('/') {
+        bail!("no / allowed here");
+    }
+
+    info!(log, "TRIM POOL: {}", pool);
+
+    let cmd = Command::new("/sbin/zpool")
+        .env_clear()
+        .arg("trim")
+        .arg(pool)
+        .output()?;
+
+    if !cmd.status.success() {
+        let errmsg = String::from_utf8_lossy(&cmd.stderr);
+        /*
+         * This is not considered fatal, the pool's backing device may not
+         * support trim/discard.
+         */
+        info!(log, "zpool trim {} failed: {}", pool, errmsg);
+    } else {
+        /*
+         * Wait until the trim is complete. Unfortunately there is no nice
+         * parsable output mechanism for this information. When trimming is in
+         * progress, the output contains a line such as:
+         *   c6t5d0  ONLINE .. (2% trimmed, started at Mon May 15 ...)
+         * and when finished:
+         *   c6t5d0  ONLINE .. (100% trimmed, completed at Mon May 15 ...)
+         */
+        loop {
+            let output = Command::new("/sbin/zpool")
+                .env_clear()
+                .arg("status")
+                .arg("-t")
+                .arg(pool)
+                .output()?;
+
+            if !output.status.success() {
+                let errmsg = String::from_utf8_lossy(&output.stderr);
+                bail!("zpool trim status {} failed: {}", pool, errmsg);
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let status: Vec<&str> = stdout
+                .lines()
+                .filter(|x| x.contains("trimmed, started"))
+                .map(|x| {
+                    let s = x.find("(").unwrap_or(0);
+                    let e = x.rfind(")").unwrap_or(x.len());
+                    &x[s..e+1]
+                })
+                .collect();
+
+            if status.len() != 1 {
+                break;
+            }
+
+            info!(log, "trim {}: {}", pool, status.first().unwrap());
+
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    Ok(())
+}
+
 fn zfs_set(log: &Logger, dataset: &str, n: &str, v: &str) -> Result<()> {
     info!(log, "SET DATASET PROPERTY ON {}: {} = {}", dataset, n, v);
 
@@ -1211,6 +1287,17 @@ fn pool_export(log: &Logger, name: &str) -> Result<bool> {
     }
 
     info!(log, "EXPORT POOL: {}", name);
+
+    let cmd = Command::new("/sbin/zpool")
+        .env_clear()
+        .arg("sync")
+        .arg(&name)
+        .output()?;
+
+    if !cmd.status.success() {
+        let errmsg = String::from_utf8_lossy(&cmd.stderr);
+        bail!("zpool sync failed: {}", errmsg);
+    }
 
     loop {
         let cmd = Command::new("/sbin/zpool")
@@ -1891,6 +1978,7 @@ struct Pool {
     compression: Option<String>,
     label: Option<bool>,
     autoexpand: Option<bool>,
+    trim: Option<bool>,
 }
 
 impl Pool {
@@ -1945,6 +2033,10 @@ impl Pool {
 
     fn autoexpand(&self) -> bool {
         self.autoexpand.unwrap_or(false)
+    }
+
+    fn trim(&self) -> bool {
+        self.trim.unwrap_or(true)
     }
 }
 
