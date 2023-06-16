@@ -652,6 +652,22 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
         args.push("autoexpand=on");
     }
 
+    let options = pool.options.iter()
+        .map(|x| ib.expand(&x)).collect::<Result<Vec<_>>>()?;
+
+    for o in &options {
+        args.push("-o");
+        args.push(o);
+    }
+
+    let fsoptions = pool.fsoptions.iter()
+        .map(|x| ib.expand(&x)).collect::<Result<Vec<_>>>()?;
+
+    for o in &fsoptions {
+        args.push("-O");
+        args.push(o);
+    }
+
     let targpool = ib.target_pool();
     args.push(&targpool);
     args.push(disk);
@@ -1979,6 +1995,10 @@ struct Pool {
     label: Option<bool>,
     autoexpand: Option<bool>,
     trim: Option<bool>,
+    #[serde(default)]
+    options: Vec<String>,
+    #[serde(default)]
+    fsoptions: Vec<String>,
 }
 
 impl Pool {
