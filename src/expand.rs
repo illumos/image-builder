@@ -114,7 +114,7 @@ impl Expansion {
                         exp.push(c);
                     }
                     None => {
-                        bail!("unexpected end of string after ${");
+                        bail!("unexpected end of string after ${{");
                     }
                 },
             }

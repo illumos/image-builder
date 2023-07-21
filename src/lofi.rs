@@ -333,7 +333,7 @@ fn device_to_minor<P: AsRef<Path>>(dev: P) -> Result<u32> {
     let driver = major_to_driver(major)?;
 
     if &driver != "lofi" {
-        bail!("driver was {}, not lofi");
+        bail!("driver was {driver}, not lofi");
     }
 
     Ok(minor >> LOFI_CMLB_SHIFT)
