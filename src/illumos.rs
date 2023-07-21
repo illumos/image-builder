@@ -2,12 +2,12 @@
  * Copyright 2021 Oxide Computer Company
  */
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
+use io::ErrorKind::NotFound;
+use io::Read;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use io::ErrorKind::NotFound;
-use io::Read;
 
 fn read_file(p: &str) -> Result<Option<String>> {
     let f = match fs::File::open(p) {
@@ -26,9 +26,8 @@ fn read_file(p: &str) -> Result<Option<String>> {
 }
 
 fn read_lines(p: &str) -> Result<Option<Vec<String>>> {
-    Ok(read_file(p)?.map(|data| {
-        data.lines().map(|a| a.trim().to_string()).collect()
-    }))
+    Ok(read_file(p)?
+        .map(|data| data.lines().map(|a| a.trim().to_string()).collect()))
 }
 
 #[derive(Debug, Clone)]
@@ -53,9 +52,8 @@ pub struct Mount {
  */
 pub fn mounts() -> Result<Vec<Mount>> {
     let mnttab = read_lines("/etc/mnttab")?.unwrap();
-    let rows: Vec<Vec<_>> = mnttab.iter()
-        .map(|m| { m.split('\t').collect() })
-        .collect();
+    let rows: Vec<Vec<_>> =
+        mnttab.iter().map(|m| m.split('\t').collect()).collect();
 
     assert!(rows.len() >= 5);
 

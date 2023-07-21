@@ -138,11 +138,6 @@ impl Package {
             _ => bail!("too much @ in \"{}\"", fmri),
         };
 
-        Ok(Package {
-            name,
-            publisher,
-            version,
-            date,
-        })
+        Ok(Package { name, publisher, version, date })
     }
 }

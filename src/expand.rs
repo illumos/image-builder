@@ -121,7 +121,10 @@ impl Expansion {
         }
     }
 
-    pub fn evaluate(&self, features: &HashMap<String, String>) -> Result<String> {
+    pub fn evaluate(
+        &self,
+        features: &HashMap<String, String>,
+    ) -> Result<String> {
         let mut out = String::new();
 
         for ch in self.chunks.iter() {
