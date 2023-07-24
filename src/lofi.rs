@@ -1,8 +1,9 @@
 /*
- * Copyright 2021 Oxide Computer Company
+ * Copyright 2023 Oxide Computer Company
  */
 
 use anyhow::{bail, Context, Result};
+use libdevinfo_sys::{di_devlink_fini, di_devlink_init, DI_MAKE_LINK};
 use std::ffi::{CStr, CString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -245,6 +246,7 @@ pub fn lofi_map<P: AsRef<Path>>(file: P, label: bool) -> Result<LofiDevice> {
 
     let lofi = LofiDevice::from_ioctl(&li);
 
+    make_devlinks();
     if let Some(devpath) = lofi.devpath.as_ref() {
         wait_for_device(devpath)?;
     }
@@ -298,18 +300,24 @@ fn major_to_driver(major: u32) -> Result<String> {
     }
 }
 
+fn make_devlinks() {
+    let driver = std::ffi::CStr::from_bytes_with_nul(b"lofi\0").unwrap();
+
+    /*
+     * Attempt to force device link creation.  This might not work if we don't
+     * have sufficient privileges.  We don't actually need to use the library,
+     * so just open it and close it if that was successful.
+     */
+    let mut hdl = unsafe { di_devlink_init(driver.as_ptr(), DI_MAKE_LINK) };
+    if !hdl.is_null() {
+        unsafe { di_devlink_fini(&mut hdl) };
+    }
+}
+
 fn wait_for_device<P: AsRef<Path>>(dev: P) -> Result<()> {
     let p = CString::new(dev.as_ref().as_os_str().as_bytes()).unwrap();
 
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
-
-    /*
-     * XXX It looks like we should be trying something like...
-     *
-     *  di_devlink_init("lofi", DI_MAKE_LINK)
-     *
-     * ... here.  Really, liblofiadm should take care of these details.
-     */
 
     for _ in 0..=30 {
         if unsafe { libc::stat(p.as_ptr(), &mut st) } == 0 {

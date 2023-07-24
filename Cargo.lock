@@ -173,6 +173,7 @@ dependencies = [
  "glob",
  "jmclib",
  "libc",
+ "libdevinfo-sys",
  "md-5",
  "serde",
  "serde_json",
@@ -206,6 +207,12 @@ name = "libc"
 version = "0.2.147"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4668fb0ea861c1df094127ac5f1da3409a82116a4ba74fca2e58ef927159bb3"
+
+[[package]]
+name = "libdevinfo-sys"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a84200ece974dfd72f1ce94f7bcef404a5192a3157754b87f2fcb76487b0d75c"
 
 [[package]]
 name = "linux-raw-sys"
