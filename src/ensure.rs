@@ -406,7 +406,7 @@ pub fn filestr<P: AsRef<Path>>(
         let mut f = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
-            .open(&dst)?;
+            .open(dst)?;
         f.write_all(contents.as_bytes())?;
         f.flush()?;
     }

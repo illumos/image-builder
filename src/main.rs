@@ -133,7 +133,7 @@ fn teardown_lofi<P: AsRef<Path>>(log: &Logger, imagefile: P) -> Result<bool> {
         let li = &matches[0];
 
         info!(log, "lofi exists {:?} -- removing...", li);
-        lofi::lofi_unmap_device(&li.devpath.as_ref().unwrap())?;
+        lofi::lofi_unmap_device(li.devpath.as_ref().unwrap())?;
         Ok(true)
     } else {
         info!(log, "no lofi found");
@@ -178,7 +178,7 @@ fn recreate_lofi<P: AsRef<Path>>(
      * Create the file that we will use as the backing store for the pool.  The
      * size of this file is the resultant disk image size.
      */
-    mkfile(log, &imagefile, size)?;
+    mkfile(log, imagefile, size)?;
 
     /*
      * Attach this file as a lofi(7D) device.
@@ -451,7 +451,7 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
 
         let stage1 = format!("{}/{}", rmp.to_str().unwrap(), hybrid.stage1);
         let stage2 = format!("{}/{}", rmp.to_str().unwrap(), hybrid.stage2);
-        installboot(&ib.log, &p2, &stage1, &stage2)?;
+        installboot(&ib.log, p2, stage1, stage2)?;
 
         teardown_lofi(&ib.log, &imagefile)?;
     }
@@ -743,7 +743,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
     let options = pool
         .options
         .iter()
-        .map(|x| ib.expand(&x))
+        .map(|x| ib.expand(x))
         .collect::<Result<Vec<_>>>()?;
 
     for o in &options {
@@ -754,7 +754,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
     let fsoptions = pool
         .fsoptions
         .iter()
-        .map(|x| ib.expand(&x))
+        .map(|x| ib.expand(x))
         .collect::<Result<Vec<_>>>()?;
 
     for o in &fsoptions {
@@ -822,7 +822,7 @@ fn run_build_pool(ib: &mut ImageBuilder) -> Result<()> {
         )?;
     }
 
-    lofi::lofi_unmap_device(&ldev)?;
+    lofi::lofi_unmap_device(ldev)?;
 
     /*
      * Copy the image file to the output directory.
@@ -1289,8 +1289,8 @@ fn zpool_trim(log: &Logger, pool: &str) -> Result<()> {
                 .lines()
                 .filter(|x| x.contains("trimmed, started"))
                 .map(|x| {
-                    let s = x.find("(").unwrap_or(0);
-                    let e = x.rfind(")").unwrap_or(x.len());
+                    let s = x.find('(').unwrap_or(0);
+                    let e = x.rfind(')').unwrap_or(x.len());
                     &x[s..e + 1]
                 })
                 .collect();
@@ -1406,7 +1406,7 @@ fn pool_destroy(log: &Logger, name: &str) -> Result<bool> {
         .env_clear()
         .arg("destroy")
         .arg("-f")
-        .arg(&name)
+        .arg(name)
         .output()?;
 
     if !cmd.status.success() {
@@ -1430,7 +1430,7 @@ fn pool_export(log: &Logger, name: &str) -> Result<bool> {
     let cmd = Command::new("/sbin/zpool")
         .env_clear()
         .arg("sync")
-        .arg(&name)
+        .arg(name)
         .output()?;
 
     if !cmd.status.success() {
@@ -1442,7 +1442,7 @@ fn pool_export(log: &Logger, name: &str) -> Result<bool> {
         let cmd = Command::new("/sbin/zpool")
             .env_clear()
             .arg("export")
-            .arg(&name)
+            .arg(name)
             .output()?;
 
         if cmd.status.success() {
@@ -1672,7 +1672,7 @@ fn pkg_optional_deps(
     let out = String::from_utf8(cmd.stdout)?;
     Ok(out
         .lines()
-        .map(|s| fmri::Package::parse_fmri(s))
+        .map(fmri::Package::parse_fmri)
         .collect::<Result<Vec<_>>>()?
         .iter()
         .map(|p| {
@@ -1821,7 +1821,7 @@ fn seed_smf(
 
     if let Some(p) = seed {
         let seeddb = format!("{}/lib/svc/seed/{}.db", mountpoint, p);
-        ensure::file(log, &seeddb, &repo, ROOT, ROOT, 0o600, Create::Always)?;
+        ensure::file(log, seeddb, &repo, ROOT, ROOT, 0o600, Create::Always)?;
     } else {
         ensure::removed(log, &repo)?;
     }
@@ -1834,7 +1834,7 @@ fn seed_smf(
 
     ensure::run_envs(
         log,
-        &[svccfg, "import", "-p", "/dev/stdout", &manifests],
+        [svccfg, "import", "-p", "/dev/stdout", &manifests],
         Some(&env),
     )?;
 
@@ -1855,7 +1855,7 @@ fn seed_smf(
     if debug {
         ensure::run_envs(
             log,
-            &[
+            [
                 svccfg,
                 "-s",
                 "system/svc/restarter:default",
@@ -1867,7 +1867,7 @@ fn seed_smf(
         )?;
         ensure::run_envs(
             log,
-            &[
+            [
                 svccfg,
                 "-s",
                 "system/svc/restarter:default",
@@ -1886,10 +1886,10 @@ fn seed_smf(
      */
     if apply_site {
         let profile_site = format!("{}/var/svc/profile/site.xml", mountpoint);
-        ensure::run_envs(log, &[svccfg, "apply", &profile_site], Some(&env))?;
+        ensure::run_envs(log, [svccfg, "apply", &profile_site], Some(&env))?;
     }
 
-    ensure::file(log, &repo, &installto, ROOT, ROOT, 0o600, Create::Always)?;
+    ensure::file(log, &repo, installto, ROOT, ROOT, 0o600, Create::Always)?;
     ensure::removed(log, &repo)?;
 
     Ok(())
@@ -2000,7 +2000,7 @@ impl Features {
     }
 
     fn expand(&self, value: &str) -> Result<String> {
-        Ok(Expansion::parse(value)?.evaluate(&self.features)?)
+        Expansion::parse(value)?.evaluate(&self.features)
     }
 }
 
@@ -2383,6 +2383,8 @@ where
     let f = std::fs::File::open(&path)
         .with_context(|| anyhow!("template load path: {:?}", &path))?;
     let mut t: Template = serde_json::from_reader(f)?;
+
+    #[allow(clippy::collapsible_else_if)]
     if load.is_include() {
         if t.pool.is_some() || t.dataset.is_some() {
             bail!("cannot specify \"pool\" or \"dataset\" in an include");
@@ -2812,7 +2814,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 let mut outstr = String::new();
                 for f in files.iter() {
-                    let inf = std::fs::read_to_string(&f)?;
+                    let inf = std::fs::read_to_string(f)?;
                     let out = inf.trim();
                     if out.is_empty() {
                         continue;
@@ -3243,7 +3245,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let pkgs_expanded = a
                     .pkgs
                     .iter()
-                    .map(|s| ib.expand(&s))
+                    .map(|s| ib.expand(s))
                     .collect::<Result<Vec<_>>>()?;
 
                 pkg_install(log, mp.to_str().unwrap(), &pkgs_expanded)?;
