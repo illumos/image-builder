@@ -1807,7 +1807,7 @@ fn seed_smf(
     tmpdir: &Path,
     mountpoint: &Path,
     debug: bool,
-    apply_site: bool,
+    apply_profiles: &[String],
     seed: Option<&str>,
 ) -> Result<()> {
     let tmpdir = tmpdir.to_str().unwrap();
@@ -1884,9 +1884,23 @@ fn seed_smf(
      * may start up before the profile is applied in the booted system, only to
      * then be disabled again.
      */
-    if apply_site {
-        let profile_site = format!("{}/var/svc/profile/site.xml", mountpoint);
-        ensure::run_envs(log, [svccfg, "apply", &profile_site], Some(&env))?;
+    for profile in apply_profiles {
+        let path = match profile.as_str() {
+            "generic" | "platform" => {
+                /*
+                 * According to /lib/svc/method/manifest-import the generic and
+                 * platform profiles are only supported in /etc.
+                 */
+                format!("{}/etc/svc/profile/{profile}.xml", mountpoint)
+            }
+            "site" => {
+                format!("{}/var/svc/profile/{profile}.xml", mountpoint)
+            }
+            other => {
+                bail!("unsupported profile name {other:?}");
+            }
+        };
+        ensure::run_envs(log, [svccfg, "apply", &path], Some(&env))?;
     }
 
     ensure::file(log, &repo, installto, ROOT, ROOT, 0o600, Create::Always)?;
@@ -3428,6 +3442,8 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 struct SeedSmfArgs {
                     debug: Option<bool>,
                     apply_site: Option<bool>,
+                    #[serde(default)]
+                    apply_profiles: Vec<String>,
                     seed: Option<String>,
                     skip_seed: Option<bool>,
                 }
@@ -3435,10 +3451,49 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: SeedSmfArgs = step.args()?;
                 let debug = a.debug.unwrap_or(false);
                 let apply_site = a.apply_site.unwrap_or(false);
+                let apply_profiles = a
+                    .apply_profiles
+                    .iter()
+                    .map(|p| ib.expand(p.as_str()))
+                    .collect::<Result<Vec<_>>>()?;
                 let seed = match a.skip_seed.unwrap_or(false) {
                     true => None,
                     false => Some(a.seed.as_deref().unwrap_or("global")),
                 };
+
+                /*
+                 * Drop any empty strings in the profile list.  This allows
+                 * consumers to use macro expansion to make a particular profile
+                 * optional, by having a macro that expands to nothing under
+                 * some conditions.
+                 */
+                let apply_profiles = apply_profiles.into_iter()
+                    .filter(|s| !s.trim().is_empty())
+                    .collect::<Vec<_>>();
+
+                let apply_profiles = if apply_site {
+                    if !apply_profiles.is_empty() {
+                        bail!(
+                            "apply_site and apply_profiles are mutually \
+                            exclusive"
+                        );
+                    }
+
+                    vec!["site".to_string()]
+                } else {
+                    apply_profiles
+                };
+
+                /*
+                 * For now, we only support the "generic", "platform", and
+                 * "site" profiles:
+                 */
+                for profile in apply_profiles.iter() {
+                    match profile.as_str() {
+                        "generic" | "platform" | "site" => (),
+                        other => bail!("unsupported profile: {other:?}"),
+                    }
+                }
 
                 seed_smf(
                     log,
@@ -3446,7 +3501,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                     &ib.tmpdir()?,
                     &ib.root()?,
                     debug,
-                    apply_site,
+                    &apply_profiles,
                     seed,
                 )?;
             }
