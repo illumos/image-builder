@@ -10,6 +10,7 @@ enum Chunk {
     Char(char),
     Simple(String),
     IfLiteral(String, String),
+    IfNotLiteral(String, String),
 }
 
 fn is_feature_char(c: char) -> bool {
@@ -21,12 +22,14 @@ fn is_feature_char(c: char) -> bool {
  *
  *  ${feature?literal}      expand to "literal" if feature is enabled,
  *                          otherwise the empty string
+ *  ${feature!literal}      expand to "literal" if feature is NOT enabled,
+ *                          otherwise the empty string
  *  ${feature}              expand to "feature" if set, or error if not
  */
 fn expand(expand: &str) -> Result<Chunk> {
     enum State {
         Feature,
-        Literal,
+        Literal(bool),
     }
 
     let mut s = State::Feature;
@@ -41,7 +44,13 @@ fn expand(expand: &str) -> Result<Chunk> {
                     if feature.is_empty() {
                         bail!("empty feature unexpected");
                     }
-                    s = State::Literal;
+                    s = State::Literal(true);
+                }
+                Some('!') => {
+                    if feature.is_empty() {
+                        bail!("empty feature unexpected");
+                    }
+                    s = State::Literal(false);
                 }
                 Some(c) if is_feature_char(c) => feature.push(c),
                 Some(c) => bail!("unexpected char in feature name: {:?}", c),
@@ -52,9 +61,10 @@ fn expand(expand: &str) -> Result<Chunk> {
                     return Ok(Chunk::Simple(feature));
                 }
             },
-            State::Literal => match chars.next() {
+            State::Literal(yes) => match chars.next() {
                 Some(c) => literal.push(c),
-                None => return Ok(Chunk::IfLiteral(feature, literal)),
+                None if yes => return Ok(Chunk::IfLiteral(feature, literal)),
+                None => return Ok(Chunk::IfNotLiteral(feature, literal)),
             },
         }
     }
@@ -141,6 +151,11 @@ impl Expansion {
                 }
                 Chunk::IfLiteral(f, l) => {
                     if features.contains_key(f) {
+                        out.push_str(l);
+                    }
+                }
+                Chunk::IfNotLiteral(f, l) => {
+                    if !features.contains_key(f) {
                         out.push_str(l);
                     }
                 }
