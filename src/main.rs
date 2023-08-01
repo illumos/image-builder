@@ -366,7 +366,8 @@ fn run_build_iso(ib: &mut ImageBuilder) -> Result<()> {
         "-no-iso-translate",
         "-cache-inodes",
     ];
-    if let Some(volume_id) = iso.volume_id.as_deref() {
+    let volume_id = ib.expando(iso.volume_id.as_deref())?;
+    if let Some(volume_id) = volume_id.as_deref() {
         args.push("-V");
         args.push(volume_id);
     }
