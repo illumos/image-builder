@@ -165,3 +165,57 @@ impl Expansion {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn expand_simple() {
+        match expand("variable").unwrap() {
+            Chunk::Simple(name) => assert_eq!(name, "variable"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn expand_if_literal() {
+        match expand("variable?literal").unwrap() {
+            Chunk::IfLiteral(name, literal) => {
+                assert_eq!(name, "variable");
+                assert_eq!(literal, "literal");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn expand_if_not_literal() {
+        match expand("variable!literal").unwrap() {
+            Chunk::IfNotLiteral(name, literal) => {
+                assert_eq!(name, "variable");
+                assert_eq!(literal, "literal");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn expand_basic_empty() {
+        assert!(expand("").is_err());
+    }
+
+    #[test]
+    fn expansion_not_enabled() {
+        let e = Expansion::parse("${false!not enabled}").unwrap();
+        let out = e.evaluate(&HashMap::default()).unwrap();
+        assert_eq!(out, "not enabled");
+    }
+
+    #[test]
+    fn expansion_not_enabled_empty() {
+        let e = Expansion::parse("${false!}").unwrap();
+        let out = e.evaluate(&HashMap::default()).unwrap();
+        assert_eq!(out, "");
+    }
+}
