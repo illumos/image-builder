@@ -1667,7 +1667,18 @@ fn pkg_optional_deps(
 
     if !cmd.status.success() {
         let errmsg = String::from_utf8_lossy(&cmd.stderr);
-        bail!("pkg contents failed: {}", errmsg);
+
+        if errmsg.contains("no matching actions found") {
+            /*
+             * There is, at time of writing, apparently no way to distinguish
+             * between the case of no optional dependencies existing, as
+             * distinct from any other error (e.g., the package was not found).
+             * If we hit this specific message we'll return an empty set.
+             */
+            return Ok(Default::default());
+        }
+
+        bail!("pkg contents failed: {errmsg}");
     }
 
     let out = String::from_utf8(cmd.stdout)?;
