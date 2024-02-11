@@ -3348,26 +3348,48 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 #[derive(Deserialize)]
                 struct PkgSetPublisherArgs {
                     publisher: String,
-                    uri: String,
+                    uri: Option<String>,
+                    mirror_uri: Option<String>,
                 }
 
                 let a: PkgSetPublisherArgs = step.args()?;
                 let mp = ib.root()?;
                 let publisher = ib.expand(&a.publisher)?;
-                let uri = ib.expand(&a.uri)?;
+                let uri = ib.expando(a.uri.as_deref())?;
+                let mirror_uri = ib.expando(a.mirror_uri.as_deref())?;
 
-                pkg(
-                    log,
-                    &[
-                        "-R",
-                        mp.to_str().unwrap(),
-                        "set-publisher",
-                        "--no-refresh",
-                        "-O",
-                        &uri,
-                        &publisher,
-                    ],
-                )?;
+                if uri.is_none() && mirror_uri.is_none() {
+                    bail!("specify at least one of \"uri\" and \"mirror_uri\"");
+                }
+
+                let mut args = vec![
+                    "-R",
+                    mp.to_str().unwrap(),
+                    "set-publisher",
+                    "--no-refresh",
+                ];
+
+                if let Some(uri) = uri.as_deref() {
+                    args.push("-O");
+                    args.push(uri);
+                }
+
+                if let Some(mirror_uri) = mirror_uri.as_deref() {
+                    /*
+                     * We want to set the mirror URI, but there is only an
+                     * option to add another mirror.  Before we add our mirror,
+                     * remove all existing mirrors if there are any:
+                     */
+                    args.push("-M");
+                    args.push("*");
+
+                    args.push("-m");
+                    args.push(mirror_uri);
+                }
+
+                args.push(&publisher);
+
+                pkg(log, &args)?;
             }
             "pkg_approve_ca_cert" => {
                 #[derive(Deserialize)]
@@ -3479,7 +3501,8 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                  * optional, by having a macro that expands to nothing under
                  * some conditions.
                  */
-                let apply_profiles = apply_profiles.into_iter()
+                let apply_profiles = apply_profiles
+                    .into_iter()
                     .filter(|s| !s.trim().is_empty())
                     .collect::<Vec<_>>();
 
