@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Oxide Computer Company
+ * Copyright 2024 Oxide Computer Company
  */
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -13,12 +13,13 @@ use uuid::Uuid;
 
 mod ensure;
 mod expand;
+mod features;
 mod fmri;
 mod illumos;
 mod lofi;
 
 use ensure::{Create, HashType};
-use expand::Expansion;
+use features::{Features, FeaturesParser};
 
 type Build = fn(ib: &mut ImageBuilder) -> Result<()>;
 
@@ -86,7 +87,7 @@ fn main() -> Result<()> {
                 "F",
                 "feature",
                 "add or remove a feature definition",
-                "[^]FEATURE[=VALUE]",
+                "[^]FEATURE[[+|-]=VALUE]",
             );
             opts.optmulti("E", "external-src", "external file src tree", "DIR");
 
@@ -900,44 +901,13 @@ fn run_build(log: &Logger, mat: &getopts::Matches) -> Result<()> {
      * already defined, to hopefully easily enable argument lists to be
      * constructed in control programs that override default values.
      */
-    let mut features = Features::default();
-    mat.opt_strs("F")
-        .iter()
-        .map(|o| {
-            let o = o.trim();
-
-            Ok(if o.is_empty() {
-                bail!("-F requires an argument");
-            } else if o.starts_with('^') {
-                /*
-                 * This is a negated feature; i.e., -F ^BLAH
-                 */
-                if o.contains('=') {
-                    bail!("-F with a negated feature cannot have a value");
-                }
-                (o.chars().skip(1).collect::<String>(), None)
-            } else if let Some((f, v)) = o.split_once('=') {
-                /*
-                 * This is an enabled feature with a value; i.e., -F BLAH=YES
-                 */
-                (f.trim().to_string(), Some(v.to_string()))
-            } else {
-                /*
-                 * This is an enabled feature with no value; i.e., -F BLAH
-                 * Just set it to "1", as if the user had passed: -F BLAH=1
-                 */
-                (o.to_string(), Some("1".to_string()))
-            })
-        })
-        .collect::<Result<Vec<_>>>()?
-        .iter()
-        .for_each(|(f, v)| {
-            if let Some(v) = v {
-                features.set(f, v);
-            } else {
-                features.clear(f);
-            }
-        });
+    let mut features = FeaturesParser::default();
+    for o in mat.opt_strs("F") {
+        if let Err(e) = features.specify(&o) {
+            bail!("invalid -F argument {o:?}: {e}");
+        }
+    }
+    let features = features.build();
 
     /*
      * Using the system svccfg(1M) is acceptable under some conditions, but not
@@ -1627,6 +1597,11 @@ fn pkg_install(
     root: &str,
     packages: &[impl AsRef<str>],
 ) -> Result<()> {
+    if packages.is_empty() {
+        info!(log, "skipping empty package list");
+        return Ok(());
+    }
+
     let mut newargs = vec!["/usr/bin/pkg", "-R", root, "install"];
     for pkg in packages {
         newargs.push(pkg.as_ref());
@@ -1635,10 +1610,19 @@ fn pkg_install(
     ensure::run(log, &newargs)
 }
 
-fn pkg_uninstall(log: &Logger, root: &str, packages: &[&str]) -> Result<()> {
+fn pkg_uninstall(
+    log: &Logger,
+    root: &str,
+    packages: &[impl AsRef<str>],
+) -> Result<()> {
+    if packages.is_empty() {
+        info!(log, "skipping empty package list");
+        return Ok(());
+    }
+
     let mut newargs = vec!["/usr/bin/pkg", "-R", root, "uninstall"];
     for pkg in packages {
-        newargs.push(pkg);
+        newargs.push(pkg.as_ref());
     }
 
     ensure::run(log, &newargs)
@@ -2000,36 +1984,6 @@ enum BuildType {
     Pcfs,
 }
 
-#[derive(Default)]
-struct Features {
-    features: HashMap<String, String>,
-}
-
-impl Features {
-    fn set<N: AsRef<str>, V: AsRef<str>>(&mut self, name: N, value: V) {
-        let name = name.as_ref().to_string();
-        let value = value.as_ref().to_string();
-
-        self.features.insert(name, value);
-    }
-
-    fn clear<N: AsRef<str>>(&mut self, name: N) {
-        self.features.remove(name.as_ref());
-    }
-
-    fn with<N: AsRef<str>>(&self, name: N) -> bool {
-        self.features.contains_key(name.as_ref())
-    }
-
-    fn expando(&self, value: Option<&str>) -> Result<Option<String>> {
-        value.map(|value| self.expand(value)).transpose()
-    }
-
-    fn expand(&self, value: &str) -> Result<String> {
-        Expansion::parse(value)?.evaluate(&self.features)
-    }
-}
-
 struct ImageBuilder {
     build_type: BuildType,
 
@@ -2194,6 +2148,10 @@ impl ImageBuilder {
 
     fn expand(&self, value: &str) -> Result<String> {
         self.features.expand(value)
+    }
+
+    fn expandm(&self, values: &[String]) -> Result<Vec<String>> {
+        self.features.expandm(values)
     }
 }
 
@@ -3268,11 +3226,7 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
                 let a: PkgInstallArgs = step.args()?;
                 let mp = ib.root()?;
 
-                let pkgs_expanded = a
-                    .pkgs
-                    .iter()
-                    .map(|s| ib.expand(s))
-                    .collect::<Result<Vec<_>>>()?;
+                let pkgs_expanded = ib.expandm(&a.pkgs)?;
 
                 pkg_install(log, mp.to_str().unwrap(), &pkgs_expanded)?;
 
@@ -3432,8 +3386,10 @@ fn run_steps(ib: &mut ImageBuilder) -> Result<()> {
 
                 let a: PkgUninstallArgs = step.args()?;
                 let mp = ib.root()?;
-                let pkgs: Vec<_> = a.pkgs.iter().map(|s| s.as_str()).collect();
-                pkg_uninstall(log, mp.to_str().unwrap(), pkgs.as_slice())?;
+
+                let pkgs_expanded = ib.expandm(&a.pkgs)?;
+
+                pkg_uninstall(log, mp.to_str().unwrap(), &pkgs_expanded)?;
             }
             "pkg_change_variant" => {
                 #[derive(Deserialize)]
