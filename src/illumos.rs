@@ -31,12 +31,14 @@ fn read_lines(p: &str) -> Result<Option<Vec<String>>> {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum MountOptionValue {
     Present,
     Value(String),
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Mount {
     pub special: String,
     pub mount_point: String,
