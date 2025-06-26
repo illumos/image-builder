@@ -1607,7 +1607,16 @@ fn pkg_install(
         newargs.push(pkg.as_ref());
     }
 
-    ensure::run(log, &newargs)
+    if let Err(e) = ensure::run(log, &newargs) {
+        let c = e.downcast_ref().map(std::process::ExitStatus::code).flatten();
+        if let Some(4) = c {
+            info!(log, "nothing to do -- package(s) already installed");
+        } else {
+            return Err(e);
+        }
+    }
+
+    Ok(())
 }
 
 fn pkg_uninstall(

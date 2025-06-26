@@ -730,7 +730,7 @@ where
         Err(e) => Err(e.into()),
         Ok(es) => {
             if !es.success() {
-                Err(anyhow!("exec {:?}: failed {:?}", &args, &es))
+                Err(anyhow!("exec {:?}: failed {:?}", &args, &es).context(es))
             } else {
                 Ok(())
             }
